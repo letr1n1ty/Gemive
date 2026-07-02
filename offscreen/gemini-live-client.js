@@ -218,8 +218,10 @@ export class GeminiLiveClient {
       if (this.goAwayReceived) return;
       this.goAwayReceived = true;
 
-      const handled = this.onGoAway?.(goAway);
-      if (handled !== false) return;
+      if (this.onGoAway) {
+        const handled = this.onGoAway(goAway);
+        if (handled !== false) return;
+      }
 
       // Fallback for clients that do not own a renewal path. Gemini may send GoAway
       // shortly before the session expires; close promptly so the server does not
