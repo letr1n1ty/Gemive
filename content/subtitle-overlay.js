@@ -19,8 +19,6 @@
     DEBUG_LOG: 'DEBUG_LOG'
   };
 
-
-
   const I18N = {
     'zh-Hant': {
       closeSubtitleWindow: '關閉字幕視窗',
@@ -102,27 +100,17 @@
     }
   };
 
-  function normalizeLocale(locale) {
-    const value = String(locale || '').toLowerCase();
-    if (value === 'zh-hans' || value.startsWith('zh-cn') || value.startsWith('zh-sg') || value.startsWith('zh-hans')) return 'zh-Hans';
-    if (value === 'en' || value.startsWith('en-')) return 'en';
-    if (value.startsWith('zh')) return 'zh-Hant';
-    return 'en';
-  }
-
-  function currentLocale() {
-    return normalizeLocale(settings?.ui?.locale || navigator.language || 'zh-Hant');
-  }
-
-  function text(key) {
-    const locale = currentLocale();
-    return I18N[locale]?.[key] || I18N['zh-Hant'][key] || I18N.en[key] || key;
-  }
+  const DEFAULT_MIN_WIDTH = 160;
+  const DEFAULT_MIN_HEIGHT = 90;
+  const DEFAULT_EXPANDED_WIDTH = 460;
+  const DEFAULT_EXPANDED_HEIGHT = 260;
+  const LAUNCHER_SIZE = 54;
+  const LAUNCHER_DRAG_THRESHOLD = 6;
+  const VIEWPORT_MARGIN = 8;
+  const STORAGE_KEY = 'gemive.overlay.position';
 
   const DEFAULT_SETTINGS = {
-    ui: {
-      locale: 'en'
-    },
+    ui: { locale: 'en' },
     subtitles: {
       showTranslation: true,
       showSource: true,
@@ -136,8 +124,8 @@
     window: {
       x: null,
       y: null,
-      width: 460,
-      height: 260,
+      width: DEFAULT_MIN_WIDTH,
+      height: DEFAULT_MIN_HEIGHT,
       backgroundColor: '#000000',
       opacity: 0.72,
       blur: 22,
@@ -152,7 +140,6 @@
     }
   };
 
-  const STORAGE_KEY = 'gemive.overlay.position';
   let settings = clone(DEFAULT_SETTINGS);
   let host = null;
   let shadow = null;
@@ -161,7 +148,6 @@
   let dragState = null;
   let resizeState = null;
   let launcherDragState = null;
-  const LAUNCHER_DRAG_THRESHOLD = 6;
   let lastSubtitleAt = 0;
   let currentStatus = 'idle';
   let collapsed = false;
@@ -183,8 +169,122 @@
     console.debug('[Gemive overlay]', event, data);
   }
 
+  function normalizeLocale(locale) {
+    const value = String(locale || '').toLowerCase();
+    if (value === 'zh-hans' || value.startsWith('zh-cn') || value.startsWith('zh-sg') || value.startsWith('zh-hans')) return 'zh-Hans';
+    if (value === 'en' || value.startsWith('en-')) return 'en';
+    if (value.startsWith('zh')) return 'zh-Hant';
+    return 'en';
+  }
+
+  function currentLocale() {
+    return normalizeLocale(settings?.ui?.locale || navigator.language || 'zh-Hant');
+  }
+
+  function text(key) {
+    const locale = currentLocale();
+    return I18N[locale]?.[key] || I18N['zh-Hant'][key] || I18N.en[key] || key;
+  }
+
+  function mergeSettings(base, patch) {
+    const result = { ...base };
+    for (const [key, value] of Object.entries(patch || {})) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        result[key] = mergeSettings(base?.[key] || {}, value);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  function numberOr(value, fallback) {
+    const next = Number(value);
+    return Number.isFinite(next) ? next : fallback;
+  }
+
+  function minWidth() {
+    return Math.max(1, Math.round(numberOr(settings.window?.width, DEFAULT_MIN_WIDTH)));
+  }
+
+  function minHeight() {
+    return Math.max(1, Math.round(numberOr(settings.window?.height, DEFAULT_MIN_HEIGHT)));
+  }
+
+  function maxWidth() {
+    return Math.max(minWidth(), window.innerWidth - VIEWPORT_MARGIN * 2);
+  }
+
+  function maxHeight() {
+    return Math.max(minHeight(), window.innerHeight - VIEWPORT_MARGIN * 2);
+  }
+
+  function clampWidth(value) {
+    return Math.max(minWidth(), Math.min(maxWidth(), Math.round(numberOr(value, DEFAULT_EXPANDED_WIDTH))));
+  }
+
+  function clampHeight(value) {
+    return Math.max(minHeight(), Math.min(maxHeight(), Math.round(numberOr(value, DEFAULT_EXPANDED_HEIGHT))));
+  }
+
+  function readPosition() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      return stored && typeof stored === 'object' ? stored : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function savePosition(options = {}) {
+    if (!host) return;
+    const rect = host.getBoundingClientRect();
+    let width = rect.width;
+    let height = rect.height;
+    if (options.preserveSize) {
+      width = savedExpandedRect?.width || readPosition()?.width || DEFAULT_EXPANDED_WIDTH;
+      height = savedExpandedRect?.height || readPosition()?.height || DEFAULT_EXPANDED_HEIGHT;
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      x: rect.left,
+      y: rect.top,
+      width: clampWidth(width),
+      height: clampHeight(height)
+    }));
+  }
+
+  function resolveExpandedSize() {
+    const stored = readPosition();
+    const width = savedExpandedRect?.width || stored?.width || DEFAULT_EXPANDED_WIDTH;
+    const height = savedExpandedRect?.height || stored?.height || DEFAULT_EXPANDED_HEIGHT;
+    return {
+      width: clampWidth(width),
+      height: clampHeight(height)
+    };
+  }
+
+  function setExpandedSize(width, height) {
+    if (!host) return;
+    host.style.width = `${clampWidth(width)}px`;
+    host.style.height = `${clampHeight(height)}px`;
+  }
+
+  function keepInsideViewport() {
+    if (!host || host.style.display === 'none') return;
+    const rect = host.getBoundingClientRect();
+    const maxLeft = Math.max(VIEWPORT_MARGIN, window.innerWidth - rect.width - VIEWPORT_MARGIN);
+    const maxTop = Math.max(VIEWPORT_MARGIN, window.innerHeight - rect.height - VIEWPORT_MARGIN);
+    if (rect.left < VIEWPORT_MARGIN || rect.top < VIEWPORT_MARGIN || rect.left > maxLeft || rect.top > maxTop) {
+      host.style.left = `${Math.min(Math.max(rect.left, VIEWPORT_MARGIN), maxLeft)}px`;
+      host.style.top = `${Math.min(Math.max(rect.top, VIEWPORT_MARGIN), maxTop)}px`;
+      host.style.right = 'auto';
+      host.style.bottom = 'auto';
+    }
+  }
+
   function createHost() {
     if (host) return;
+
     host = document.createElement('div');
     host.id = 'gemive-overlay-host';
     host.style.position = 'fixed';
@@ -193,10 +293,8 @@
     host.style.display = 'none';
     host.style.right = '24px';
     host.style.bottom = '24px';
-    if (!collapsed) {
-      host.style.width = `${settings.window.width}px`;
-      host.style.height = `${settings.window.height ?? 260}px`;
-    }
+    host.style.width = `${resolveExpandedSize().width}px`;
+    host.style.height = `${resolveExpandedSize().height}px`;
 
     shadow = host.attachShadow({ mode: 'open' });
     const launcherIconUrl = chrome.runtime.getURL('assets/icon-48.png');
@@ -205,8 +303,8 @@
         :host { all: initial; }
         .launcher {
           appearance: none;
-          width: 54px;
-          height: 54px;
+          width: ${LAUNCHER_SIZE}px;
+          height: ${LAUNCHER_SIZE}px;
           border-radius: 18px;
           padding: 0;
           display: grid;
@@ -243,6 +341,10 @@
           display: flex;
           flex-direction: column;
           height: 100%;
+          min-width: var(--gemive-min-width, ${DEFAULT_MIN_WIDTH}px);
+          min-height: var(--gemive-min-height, ${DEFAULT_MIN_HEIGHT}px);
+          max-width: calc(100vw - ${VIEWPORT_MARGIN * 2}px);
+          max-height: calc(100vh - ${VIEWPORT_MARGIN * 2}px);
           font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", system-ui, sans-serif;
           color: rgba(255,255,255,0.94);
           background: rgba(17, 17, 27, 0.82);
@@ -253,10 +355,6 @@
           border-radius: 18px;
           overflow: hidden;
           user-select: text;
-          min-width: 320px;
-          min-height: 180px;
-          max-width: min(900px, calc(100vw - 32px));
-          max-height: calc(100vh - 32px);
         }
         .toolbar {
           position: relative;
@@ -329,7 +427,7 @@
           min-height: 0;
           display: flex;
           flex-direction: column;
-          padding: 13px 17px 16px;
+          padding: 8px 10px 10px;
           overflow: hidden;
           scrollbar-width: thin;
           scrollbar-color: rgba(255,255,255,0.22) transparent;
@@ -374,9 +472,7 @@
           flex: 1 1 50%;
           padding-bottom: 10px;
         }
-        .card.show-source .source {
-          display: block;
-        }
+        .card.show-source .source { display: block; }
         .empty { color: rgba(255,255,255,0.62); }
         .translation.empty { font-size: 20px !important; font-weight: 740; }
         .source.empty { font-size: 13px !important; }
@@ -390,6 +486,7 @@
           cursor: nwse-resize;
           opacity: 0.30;
           transition: opacity 120ms ease;
+          touch-action: none;
         }
         .card:hover .resize { opacity: 0.62; }
         .resize::after {
@@ -442,7 +539,7 @@
       hide: shadow.querySelector('.hide'),
       hideIcon: shadow.querySelector('.hide-icon'),
       start: shadow.querySelector('.start'),
-      stop: shadow.querySelector('.stop'),
+      stop: shadow.querySelector('.stop')
     };
 
     elements.launcher.addEventListener('pointerdown', startLauncherPointer);
@@ -456,7 +553,7 @@
     window.addEventListener('resize', keepInsideViewport);
 
     moveIntoCurrentFullscreenRoot();
-    applySettings();
+    applySettings({ preserveActualSize: true });
     updateStatus('idle');
     restorePosition();
   }
@@ -472,23 +569,84 @@
       const response = await sendRuntimeMessage({ type: MESSAGE.GET_SETTINGS });
       if (response?.settings) {
         settings = mergeSettings(settings, response.settings);
-        applySettings();
+        applySettings({ preserveActualSize: true });
       }
     } catch {}
   }
 
+  function applySettings({ preserveActualSize = true } = {}) {
+    if (!host || !elements.card) return;
 
-  function isBusyOverlayStatus(value = currentStatus) {
-    return ['starting', 'capturing', 'connecting', 'translating', 'stopping'].includes(value);
+    const bg = settings.window.backgroundColor || '#000000';
+    const opacity = Number(settings.window.opacity ?? 0.72);
+    const rgb = hexToRgb(bg) || { r: 18, g: 21, b: 25 };
+    const blur = Number(settings.window.blur ?? 22);
+
+    elements.card.style.background = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${opacity})`;
+    elements.card.style.borderRadius = `${settings.window.borderRadius}px`;
+    elements.card.style.setProperty('--gemive-blur', `${blur}px`);
+    elements.card.style.setProperty('--gemive-min-width', `${minWidth()}px`);
+    elements.card.style.setProperty('--gemive-min-height', `${minHeight()}px`);
+    if (elements.launcher) elements.launcher.style.setProperty('--gemive-blur', `${blur}px`);
+
+    elements.card.classList.toggle('show-source', Boolean(settings.subtitles.showSource));
+    elements.translation.style.display = settings.subtitles.showTranslation ? 'block' : 'none';
+    elements.translation.style.fontSize = `${settings.subtitles.translationFontSize}px`;
+    elements.translation.style.color = settings.subtitles.translationColor;
+    elements.translation.style.maxHeight = 'none';
+    elements.source.style.fontSize = `${settings.subtitles.sourceFontSize}px`;
+    elements.source.style.color = settings.subtitles.sourceColor;
+    elements.source.style.maxHeight = 'none';
+
+    updateStaticText();
+    if (!settings.window.autoCollapse && collapsed) expandOverlay();
+    if (!collapsed && preserveActualSize) {
+      const rect = host.getBoundingClientRect();
+      if (rect.width < minWidth() || rect.height < minHeight()) {
+        setExpandedSize(Math.max(rect.width, minWidth()), Math.max(rect.height, minHeight()));
+      }
+      keepInsideViewport();
+    }
+  }
+
+  function updateStaticText() {
+    if (!elements?.hide) return;
+    const hideActionKey = settings.window.autoCollapse ? 'collapseSubtitleWindow' : 'closeSubtitleWindow';
+    elements.hide.title = text(hideActionKey);
+    elements.hide.setAttribute('aria-label', text(hideActionKey));
+    if (elements.hideIcon) {
+      elements.hideIcon.setAttribute('d', settings.window.autoCollapse
+        ? 'M3 7.25h10v1.5H3z'
+        : 'M3.28 2.22 8 6.94l4.72-4.72 1.06 1.06L9.06 8l4.72 4.72-1.06 1.06L8 9.06l-4.72 4.72-1.06-1.06L6.94 8 2.22 3.28z');
+    }
+    elements.start.title = text('startTranslation');
+    elements.start.setAttribute('aria-label', text('startTranslation'));
+    elements.stop.title = text('stopTranslation');
+    elements.stop.setAttribute('aria-label', text('stopTranslation'));
+    elements.resize.title = text('resizeWindow');
+    if (elements.launcher) {
+      elements.launcher.title = text('expandSubtitleWindow');
+      elements.launcher.setAttribute('aria-label', text('expandSubtitleWindow'));
+    }
+    updateStatus(currentStatus);
+  }
+
+  function hexToRgb(hex) {
+    const match = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '');
+    if (!match) return null;
+    return {
+      r: parseInt(match[1], 16),
+      g: parseInt(match[2], 16),
+      b: parseInt(match[3], 16)
+    };
   }
 
   function collapseOverlay() {
     if (!host || !elements.card || !elements.launcher || !settings.window.autoCollapse) return;
     if (!collapsed) {
       const rect = host.getBoundingClientRect();
-      if (rect.width > 80 && rect.height > 80) {
-        savedExpandedRect = { width: rect.width, height: rect.height };
-      }
+      if (rect.width > 80 && rect.height > 80) savedExpandedRect = { width: rect.width, height: rect.height };
+      savePosition();
     }
     collapsed = true;
     host.dataset.gemiveCollapsed = 'true';
@@ -500,10 +658,10 @@
     elements.launcher.removeAttribute('aria-hidden');
     elements.launcher.title = text('expandSubtitleWindow');
     elements.launcher.setAttribute('aria-label', text('expandSubtitleWindow'));
-    host.style.width = '54px';
-    host.style.height = '54px';
-    host.style.minWidth = '54px';
-    host.style.minHeight = '54px';
+    host.style.width = `${LAUNCHER_SIZE}px`;
+    host.style.height = `${LAUNCHER_SIZE}px`;
+    host.style.minWidth = `${LAUNCHER_SIZE}px`;
+    host.style.minHeight = `${LAUNCHER_SIZE}px`;
     host.style.overflow = 'visible';
     keepInsideViewport();
   }
@@ -521,10 +679,8 @@
     host.style.minWidth = '0';
     host.style.minHeight = '0';
     host.style.overflow = 'visible';
-    const width = Math.round(savedExpandedRect?.width || settings.window.width || 460);
-    const height = Math.round(savedExpandedRect?.height || settings.window.height || 260);
-    host.style.width = `${width}px`;
-    host.style.height = `${height}px`;
+    const size = resolveExpandedSize();
+    setExpandedSize(size.width, size.height);
     keepInsideViewport();
   }
 
@@ -538,7 +694,7 @@
     createHost();
     if (payload.settings) {
       settings = mergeSettings(settings, payload.settings);
-      applySettings();
+      applySettings({ preserveActualSize: true });
     } else {
       hydrateSettings();
     }
@@ -563,7 +719,6 @@
     visible = false;
     if (host) host.style.display = 'none';
   }
-
 
   function handleLauncherKeydown(event) {
     if (!collapsed) return;
@@ -632,91 +787,6 @@
     launcherDragState = null;
   }
 
-  window.__gemiveOverlayShow = showOverlay;
-
-  function mergeSettings(base, patch) {
-    const result = { ...base };
-    for (const [key, value] of Object.entries(patch || {})) {
-      if (value && typeof value === 'object' && !Array.isArray(value)) {
-        result[key] = mergeSettings(base?.[key] || {}, value);
-      } else {
-        result[key] = value;
-      }
-    }
-    return result;
-  }
-
-  function applySettings() {
-    if (!host || !elements.card) return;
-    if (!collapsed) {
-      host.style.width = `${settings.window.width}px`;
-      host.style.height = `${settings.window.height ?? 260}px`;
-    }
-    const bg = settings.window.backgroundColor || '#000000';
-    const opacity = Number(settings.window.opacity ?? 0.72);
-    const rgb = hexToRgb(bg) || { r: 18, g: 21, b: 25 };
-    elements.card.style.background = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${opacity})`;
-    elements.card.style.borderRadius = `${settings.window.borderRadius}px`;
-    elements.card.style.setProperty('--gemive-blur', `${Number(settings.window.blur ?? 22)}px`);
-    if (elements.launcher) elements.launcher.style.setProperty('--gemive-blur', `${Number(settings.window.blur ?? 22)}px`);
-
-    elements.card.classList.toggle('show-source', Boolean(settings.subtitles.showSource));
-    elements.translation.style.display = settings.subtitles.showTranslation ? 'block' : 'none';
-    elements.translation.style.fontSize = `${settings.subtitles.translationFontSize}px`;
-    elements.translation.style.color = settings.subtitles.translationColor;
-    elements.translation.style.maxHeight = 'none';
-
-    elements.source.style.fontSize = `${settings.subtitles.sourceFontSize}px`;
-    elements.source.style.color = settings.subtitles.sourceColor;
-    elements.source.style.maxHeight = 'none';
-    updateStaticText();
-    if (!settings.window.autoCollapse && collapsed) expandOverlay();
-
-  }
-
-
-  function updateStaticText() {
-    if (!elements?.hide) return;
-    const hideActionKey = settings.window.autoCollapse ? 'collapseSubtitleWindow' : 'closeSubtitleWindow';
-    elements.hide.title = text(hideActionKey);
-    elements.hide.setAttribute('aria-label', text(hideActionKey));
-    if (elements.hideIcon) {
-      elements.hideIcon.setAttribute('d', settings.window.autoCollapse
-        ? 'M3 7.25h10v1.5H3z'
-        : 'M3.28 2.22 8 6.94l4.72-4.72 1.06 1.06L9.06 8l4.72 4.72-1.06 1.06L8 9.06l-4.72 4.72-1.06-1.06L6.94 8 2.22 3.28z');
-    }
-    elements.start.title = text('startTranslation');
-    elements.start.setAttribute('aria-label', text('startTranslation'));
-    elements.stop.title = text('stopTranslation');
-    elements.stop.setAttribute('aria-label', text('stopTranslation'));
-    elements.resize.title = text('resizeWindow');
-    if (elements.launcher) {
-      elements.launcher.title = text('expandSubtitleWindow');
-      elements.launcher.setAttribute('aria-label', text('expandSubtitleWindow'));
-    }
-    if (elements.translation.classList.contains('empty') && elements.translation.textContent.trim()) {
-      const current = elements.translation.textContent.trim();
-      const readyTexts = Object.values(I18N).map((item) => item.overlayReadyTitle);
-      if (readyTexts.includes(current)) elements.translation.textContent = text('overlayReadyTitle');
-    }
-    if (elements.source.classList.contains('empty') && elements.source.textContent.trim()) {
-      const current = elements.source.textContent.trim();
-      const readyTexts = Object.values(I18N).map((item) => item.overlayReadyBody);
-      if (readyTexts.includes(current)) elements.source.textContent = text('overlayReadyBody');
-    }
-    updateStatus(currentStatus);
-  }
-
-  function hexToRgb(hex) {
-    const match = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '');
-    if (!match) return null;
-    return {
-      r: parseInt(match[1], 16),
-      g: parseInt(match[2], 16),
-      b: parseInt(match[3], 16)
-    };
-  }
-
   async function startTranslation(event) {
     event?.stopPropagation?.();
     debug('start.click');
@@ -750,7 +820,7 @@
       elements.translation.classList.add('empty');
       elements.source.classList.add('empty');
     } catch (error) {
-      debug('start.error', { message: error?.message || String(error), stack: error?.stack || '' });
+      debug('stop.error', { message: error?.message || String(error), stack: error?.stack || '' });
       updateStatus({ status: 'error', lastError: { message: error?.message || String(error) } });
     }
   }
@@ -761,7 +831,6 @@
     lastSubtitleAt = Date.now();
     const translation = payload?.translation?.text || '';
     const source = payload?.source?.text || '';
-
     elements.translation.textContent = translation || text('listening');
     elements.source.textContent = source || text('waitingSource');
     elements.translation.classList.toggle('empty', !translation);
@@ -777,7 +846,15 @@
     const normalized = typeof status === 'object' && status ? status : { status: status || 'idle' };
     const value = normalized.status || 'idle';
     currentStatus = value;
-    const labelMap = { idle: text('statusIdle'), starting: text('statusStarting'), capturing: text('statusCapturing'), connecting: text('statusConnecting'), translating: text('statusTranslating'), stopping: text('statusStopping'), error: text('statusError') };
+    const labelMap = {
+      idle: text('statusIdle'),
+      starting: text('statusStarting'),
+      capturing: text('statusCapturing'),
+      connecting: text('statusConnecting'),
+      translating: text('statusTranslating'),
+      stopping: text('statusStopping'),
+      error: text('statusError')
+    };
     elements.status.textContent = labelMap[value] || String(value);
     elements.start.hidden = ['starting', 'capturing', 'connecting', 'translating', 'stopping'].includes(value);
     elements.stop.hidden = !['starting', 'capturing', 'connecting', 'translating', 'stopping'].includes(value);
@@ -792,36 +869,25 @@
   }
 
   function restorePosition() {
-    try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-      if (stored && Number.isFinite(stored.x) && Number.isFinite(stored.y)) {
-        host.style.left = `${stored.x}px`;
-        host.style.top = `${stored.y}px`;
-        if (Number.isFinite(stored.width)) host.style.width = `${stored.width}px`;
-        if (Number.isFinite(stored.height)) host.style.height = `${stored.height}px`;
-        host.style.right = 'auto';
-        host.style.bottom = 'auto';
-      }
-    } catch {}
-  }
-
-  function savePosition(options = {}) {
-    const rect = host.getBoundingClientRect();
-    let width = rect.width;
-    let height = rect.height;
-    if (options.preserveSize) {
-      width = savedExpandedRect?.width || settings.window.width || width;
-      height = savedExpandedRect?.height || settings.window.height || height;
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ x: rect.left, y: rect.top, width, height }));
+    const stored = readPosition();
+    if (!stored) return;
+    if (Number.isFinite(stored.x)) host.style.left = `${stored.x}px`;
+    if (Number.isFinite(stored.y)) host.style.top = `${stored.y}px`;
+    if (Number.isFinite(stored.width) && Number.isFinite(stored.height)) setExpandedSize(stored.width, stored.height);
+    host.style.right = 'auto';
+    host.style.bottom = 'auto';
+    keepInsideViewport();
   }
 
   function resetPosition() {
     localStorage.removeItem(STORAGE_KEY);
+    savedExpandedRect = null;
     host.style.left = 'auto';
     host.style.top = 'auto';
     host.style.right = '24px';
     host.style.bottom = '24px';
+    const size = resolveExpandedSize();
+    setExpandedSize(size.width, size.height);
     keepInsideViewport();
   }
 
@@ -862,6 +928,7 @@
 
   function startResize(event) {
     event.preventDefault();
+    event.stopPropagation();
     const rect = host.getBoundingClientRect();
     resizeState = {
       pointerId: event.pointerId,
@@ -873,42 +940,25 @@
     elements.resize.setPointerCapture(event.pointerId);
     elements.resize.addEventListener('pointermove', onResize);
     elements.resize.addEventListener('pointerup', stopResize, { once: true });
+    elements.resize.addEventListener('pointercancel', stopResize, { once: true });
   }
 
   function onResize(event) {
     if (!resizeState) return;
-    const nextWidth = Math.max(320, Math.min(window.innerWidth - 24, resizeState.width + event.clientX - resizeState.startX));
-    const nextHeight = Math.max(180, Math.min(window.innerHeight - 24, resizeState.height + event.clientY - resizeState.startY));
-    host.style.width = `${nextWidth}px`;
-    host.style.height = `${nextHeight}px`;
+    const nextWidth = clampWidth(resizeState.width + event.clientX - resizeState.startX);
+    const nextHeight = clampHeight(resizeState.height + event.clientY - resizeState.startY);
+    setExpandedSize(nextWidth, nextHeight);
     keepInsideViewport();
   }
 
-  async function stopResize() {
+  function stopResize() {
     if (!resizeState) return;
     elements.resize.removeEventListener('pointermove', onResize);
+    try { elements.resize.releasePointerCapture(resizeState.pointerId); } catch {}
     resizeState = null;
+    const rect = host.getBoundingClientRect();
+    savedExpandedRect = { width: rect.width, height: rect.height };
     savePosition();
-    const rect = host.getBoundingClientRect();
-    settings.window.width = Math.round(rect.width);
-    settings.window.height = Math.round(rect.height);
-    sendRuntimeMessage({
-      type: MESSAGE.UPDATE_SETTINGS,
-      patch: { window: { width: settings.window.width, height: settings.window.height } }
-    }).catch(() => undefined);
-  }
-
-  function keepInsideViewport() {
-    if (!host || host.style.display === 'none') return;
-    const rect = host.getBoundingClientRect();
-    const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
-    const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
-    if (rect.left < 8 || rect.top < 8 || rect.left > maxLeft || rect.top > maxTop) {
-      host.style.left = `${Math.min(Math.max(rect.left, 8), maxLeft)}px`;
-      host.style.top = `${Math.min(Math.max(rect.top, 8), maxTop)}px`;
-      host.style.right = 'auto';
-      host.style.bottom = 'auto';
-    }
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -936,7 +986,7 @@
         break;
       case MESSAGE.SETTINGS_UPDATED:
         settings = mergeSettings(settings, message.payload || {});
-        applySettings();
+        applySettings({ preserveActualSize: true });
         sendResponse?.({ ok: true });
         break;
       default:
@@ -944,6 +994,8 @@
     }
     return true;
   });
+
+  window.__gemiveOverlayShow = showOverlay;
 
   setInterval(() => {
     if (!visible || !host || !lastSubtitleAt) return;
