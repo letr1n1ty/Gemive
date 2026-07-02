@@ -51,10 +51,46 @@
   --settings-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(205, 214, 244, 0.045);
   --settings-row-shadow: inset 0 1px 0 rgba(205, 214, 244, 0.028);
   --settings-focus-ring: rgba(137, 180, 250, 0.38);
+  --gemive-scrollbar-track: rgba(17, 17, 27, 0.78);
+  --gemive-scrollbar-thumb: rgba(180, 190, 254, 0.34);
+  --gemive-scrollbar-thumb-hover: rgba(137, 180, 250, 0.58);
+  --gemive-scrollbar-border: rgba(17, 17, 27, 0.92);
 }
 
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
+
+html,
+body,
+textarea#debugLogs {
+  scrollbar-color: var(--gemive-scrollbar-thumb) var(--gemive-scrollbar-track);
+  scrollbar-width: thin;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+textarea#debugLogs::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
+textarea#debugLogs::-webkit-scrollbar-track {
+  background: var(--gemive-scrollbar-track);
+}
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
+textarea#debugLogs::-webkit-scrollbar-thumb {
+  border: 2px solid var(--gemive-scrollbar-border);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, var(--gemive-scrollbar-thumb), rgba(203, 166, 247, 0.36));
+}
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover,
+textarea#debugLogs::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(180deg, var(--gemive-scrollbar-thumb-hover), rgba(203, 166, 247, 0.52));
+}
 
 body {
   margin: 0;
@@ -518,7 +554,6 @@ footer {
 
 .api-actions {
   padding-top: 0;
-  border-top: 0;
 }
 
 .slider-stack {
