@@ -43,6 +43,8 @@ Gemive is still loaded directly as browser-readable JavaScript. TypeScript is cu
   - Shared data shapes for settings, sessions, subtitles, transcripts, and common runtime state.
 - `core/runtime-messages.ts`
   - Discriminated runtime message contract for background, offscreen, popup, options, and content boundaries.
+- `offscreen/audio-types.ts`
+  - Audio pipeline contracts for router payloads, AudioWorklet messages, PCM chunks, player options, and Gemini Live client callbacks.
 
 Runtime JavaScript should continue to use `core/message-types.js` until the project switches to a real `src/` to `dist/` build.
 
@@ -59,6 +61,16 @@ This normalization layer clamps user-controlled or persisted values before savin
 - Locale, provider, model, color, and transcript folder fields
 
 This protects the extension from stale settings, older versions, malformed patches, and manually edited local storage.
+
+## Audio pipeline lifecycle
+
+The offscreen audio path is designed to fail closed:
+
+- `AudioRouter.start()` validates stream id, tab id, settings, and API keys before opening capture.
+- If startup fails after partially creating resources, `AudioRouter` stops and releases the Gemini client, player, worklet node, gain nodes, media stream tracks, and `AudioContext`.
+- `Pcm16Chunker` clamps sample rates and chunk duration, ignores invalid sample frames, and normalizes non-finite samples before encoding.
+- `Pcm16Player` clamps sample rate, jitter buffer, and volume, ignores malformed audio frames, and resets runaway playback scheduling.
+- `GeminiLiveClient` bounds pending audio messages before setup completes and clears pending audio on setup failure or close.
 
 ## Audio flow
 
