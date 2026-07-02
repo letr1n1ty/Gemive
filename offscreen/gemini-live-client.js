@@ -37,7 +37,7 @@ function websocketDataToAudioBase64(data) {
 }
 
 export class GeminiLiveClient {
-  constructor({ apiKey, model, targetLanguageCode, echoTargetLanguage, onServerContent, onAudio, onOpen, onReady, onClose, onError, onDebug }) {
+  constructor({ apiKey, model, targetLanguageCode, echoTargetLanguage, onServerContent, onAudio, onOpen, onReady, onClose, onError, onGoAway, onDebug }) {
     this.apiKey = apiKey;
     this.model = model || 'gemini-3.5-live-translate-preview';
     this.targetLanguageCode = targetLanguageCode || 'zh-Hant';
@@ -48,10 +48,12 @@ export class GeminiLiveClient {
     this.onReady = onReady;
     this.onClose = onClose;
     this.onError = onError;
+    this.onGoAway = onGoAway;
     this.onDebug = onDebug;
     this.websocket = null;
     this.isReady = false;
     this.userClosed = false;
+    this.goAwayReceived = false;
     this.pendingAudio = [];
     this.setupTimer = null;
     this.connectSettled = false;
@@ -65,6 +67,7 @@ export class GeminiLiveClient {
       ws.binaryType = 'arraybuffer';
       this.websocket = ws;
       this.userClosed = false;
+      this.goAwayReceived = false;
       this.connectSettled = false;
 
       const failSetup = (error) => {
@@ -212,8 +215,15 @@ export class GeminiLiveClient {
     if (response.goAway || response.go_away) {
       const goAway = response.goAway || response.go_away;
       this.onDebug?.('server.goAway', goAway);
-      // Gemini may send GoAway shortly before the session expires. Close promptly
-      // so the server does not abort with code 1008 because the client ignored it.
+      if (this.goAwayReceived) return;
+      this.goAwayReceived = true;
+
+      const handled = this.onGoAway?.(goAway);
+      if (handled !== false) return;
+
+      // Fallback for clients that do not own a renewal path. Gemini may send GoAway
+      // shortly before the session expires; close promptly so the server does not
+      // abort with code 1008 because the client ignored it.
       if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
         this.userClosed = true;
         setTimeout(() => {
