@@ -249,14 +249,14 @@ export class GeminiLiveClient {
     }
   }
 
-  close() {
+  close(reason = 'Gemive session stopped') {
     this.userClosed = true;
     this.isReady = false;
     this.pendingAudio = [];
     clearTimeout(this.setupTimer);
     this.setupTimer = null;
     if (this.websocket && this.websocket.readyState <= WebSocket.OPEN) {
-      this.websocket.close(1000, 'Gemive session stopped');
+      this.websocket.close(1000, reason);
     }
     this.websocket = null;
   }
