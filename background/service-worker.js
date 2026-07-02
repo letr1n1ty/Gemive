@@ -1,6 +1,11 @@
 import { MESSAGE } from '../core/message-types.js';
 import { getSettings, updateSettings } from '../storage/settings-store.js';
-import { appendTranscript } from '../storage/transcript-store.js';
+import {
+  appendTranscript,
+  recoverInterruptedTranscripts,
+  removeTranscriptCheckpoint,
+  saveTranscriptCheckpoint
+} from '../storage/transcript-store.js';
 import { toGemiveError } from '../core/error-types.js';
 import { resolveLocale, t } from '../core/i18n.js';
 
@@ -17,6 +22,8 @@ let session = {
 
 let activeTranscriptSession = null;
 let lastTranscriptSnapshotSignature = '';
+let transcriptCheckpointTimer = null;
+let transcriptCheckpointInFlight = null;
 let startInFlight = null;
 let navigationRestartInFlight = null;
 let navigationRestartTimer = null;
@@ -26,6 +33,7 @@ let lastInactivityCheckAt = 0;
 
 const SPEECH_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
 const INACTIVITY_CHECK_THROTTLE_MS = 30 * 1000;
+const TRANSCRIPT_CHECKPOINT_DEBOUNCE_MS = 1000;
 
 const DEBUG_LOG_KEY = 'gemive.debug.logs';
 const DEBUG_LOG_LIMIT = 500;
@@ -177,7 +185,6 @@ async function sendToOffscreen(message) {
   return response;
 }
 
-
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -226,7 +233,7 @@ async function releaseExistingCaptureIfOwned(tabId) {
   await closeOffscreenDocumentIfPresent();
   if (await waitForCaptureRelease(tabId, 2600)) {
     await ensureOffscreenDocument();
-  debug('offscreen.ready');
+    debug('offscreen.ready');
     return;
   }
 
@@ -235,22 +242,71 @@ async function releaseExistingCaptureIfOwned(tabId) {
   );
 }
 
+async function flushTranscriptCheckpoint(reason = 'checkpoint') {
+  clearTimeout(transcriptCheckpointTimer);
+  transcriptCheckpointTimer = null;
 
-function startTranscriptRecording(settings, tab) {
+  if (transcriptCheckpointInFlight) {
+    await transcriptCheckpointInFlight.catch(() => undefined);
+  }
+
+  const current = activeTranscriptSession;
+  if (!current) return;
+
+  const checkpoint = {
+    ...current,
+    status: current.status || 'active',
+    checkpointReason: reason,
+    updatedAt: current.updatedAt || Date.now()
+  };
+
+  transcriptCheckpointInFlight = saveTranscriptCheckpoint(checkpoint)
+    .then(() => {
+      debug('transcript.recording.checkpoint.saved', {
+        reason,
+        id: checkpoint.id,
+        hasSource: Boolean(checkpoint.sourceText),
+        hasTranslation: Boolean(checkpoint.translationText)
+      });
+    })
+    .finally(() => {
+      transcriptCheckpointInFlight = null;
+    });
+
+  await transcriptCheckpointInFlight;
+}
+
+function scheduleTranscriptCheckpoint(reason = 'subtitle-update') {
+  if (!activeTranscriptSession) return;
+  clearTimeout(transcriptCheckpointTimer);
+  transcriptCheckpointTimer = setTimeout(() => {
+    flushTranscriptCheckpoint(reason).catch((error) => {
+      debug('transcript.recording.checkpointFailed', { message: error?.message || String(error), reason });
+    });
+  }, TRANSCRIPT_CHECKPOINT_DEBOUNCE_MS);
+}
+
+async function startTranscriptRecording(settings, tab) {
   if (!settings?.privacy?.saveTranscript) {
+    clearTimeout(transcriptCheckpointTimer);
+    transcriptCheckpointTimer = null;
     activeTranscriptSession = null;
     lastTranscriptSnapshotSignature = '';
     return;
   }
+  const startedAt = Date.now();
   activeTranscriptSession = {
     id: crypto.randomUUID(),
     type: 'session',
-    startedAt: Date.now(),
+    status: 'active',
+    startedAt,
+    createdAt: startedAt,
+    updatedAt: startedAt,
     endedAt: null,
     tabId: tab?.id ?? null,
     tabTitle: tab?.title || '',
     tabUrl: tab?.url || '',
-    urlHistory: tab?.url ? [{ url: tab.url, at: Date.now() }] : [],
+    urlHistory: tab?.url ? [{ url: tab.url, at: startedAt }] : [],
     sourceText: '',
     translationText: '',
     sourceLanguageCode: '',
@@ -259,6 +315,7 @@ function startTranscriptRecording(settings, tab) {
     stopReason: ''
   };
   lastTranscriptSnapshotSignature = '';
+  await flushTranscriptCheckpoint('start');
   debug('transcript.recording.started', { tabId: tab?.id, saveTranscript: true });
 }
 
@@ -267,29 +324,35 @@ function normalizeTranscriptText(value) {
 }
 
 function updateTranscriptRecording(payload) {
-  if (!activeTranscriptSession) return;
+  if (!activeTranscriptSession) return false;
   const translationText = normalizeTranscriptText(payload?.translation?.text);
   const sourceText = normalizeTranscriptText(payload?.source?.text);
-  if (!translationText && !sourceText) return;
+  if (!translationText && !sourceText) return false;
 
   const signature = `${sourceText}\n---\n${translationText}`;
-  if (signature === lastTranscriptSnapshotSignature) return;
+  if (signature === lastTranscriptSnapshotSignature) return false;
   lastTranscriptSnapshotSignature = signature;
 
+  const updatedAt = Date.now();
   activeTranscriptSession.translationText = translationText || activeTranscriptSession.translationText;
   activeTranscriptSession.sourceText = sourceText || activeTranscriptSession.sourceText;
   activeTranscriptSession.sourceLanguageCode = payload?.source?.languageCode || activeTranscriptSession.sourceLanguageCode || '';
   activeTranscriptSession.targetLanguageCode = payload?.translation?.languageCode || activeTranscriptSession.targetLanguageCode || '';
-  activeTranscriptSession.updatedAt = Date.now();
+  activeTranscriptSession.updatedAt = updatedAt;
   activeTranscriptSession.updates.push({
-    at: Date.now(),
+    at: updatedAt,
     translationText,
     sourceText
   });
   if (activeTranscriptSession.updates.length > 120) activeTranscriptSession.updates.shift();
+  scheduleTranscriptCheckpoint('subtitle-update');
+  return true;
 }
 
 async function finalizeTranscriptRecording(reason = 'stop') {
+  clearTimeout(transcriptCheckpointTimer);
+  transcriptCheckpointTimer = null;
+
   const current = activeTranscriptSession;
   activeTranscriptSession = null;
   lastTranscriptSnapshotSignature = '';
@@ -298,7 +361,16 @@ async function finalizeTranscriptRecording(reason = 'stop') {
   current.endedAt = Date.now();
   current.stopReason = reason;
   current.durationMs = Math.max(0, current.endedAt - current.startedAt);
+  current.updatedAt = current.endedAt;
+  current.status = reason === 'stop' ? 'finished' : 'interrupted';
+
+  await saveTranscriptCheckpoint(current).catch((error) => {
+    debug('transcript.recording.finalCheckpointFailed', { message: error?.message || String(error), reason });
+  });
   await appendTranscript(current);
+  await removeTranscriptCheckpoint(current.id).catch((error) => {
+    debug('transcript.recording.checkpointCleanupFailed', { message: error?.message || String(error), id: current.id });
+  });
   debug('transcript.recording.saved', {
     reason,
     durationMs: current.durationMs,
@@ -310,6 +382,7 @@ async function finalizeTranscriptRecording(reason = 'stop') {
 function noteTranscriptUrlChange(url) {
   if (!activeTranscriptSession || !url) return;
   activeTranscriptSession.tabUrl = url;
+  activeTranscriptSession.updatedAt = Date.now();
   const history = Array.isArray(activeTranscriptSession.urlHistory) ? activeTranscriptSession.urlHistory : [];
   if (!history.length || history[history.length - 1]?.url !== url) {
     history.push({ url, at: Date.now() });
@@ -326,16 +399,18 @@ async function restartSessionAfterNavigation({ tabId, url, reason = 'url-change'
     return session;
   }
 
+  const nextUrl = tab.url || url || session.tabUrl || '';
+  noteTranscriptUrlChange(nextUrl);
+  await flushTranscriptCheckpoint(tab.active ? 'navigation-before-restart' : 'navigation-deferred');
+
   if (!tab.active) {
-    pendingNavigationRestart = { tabId, url: tab.url || url || session.tabUrl || '', reason, at: Date.now() };
+    pendingNavigationRestart = { tabId, url: nextUrl, reason, at: Date.now() };
     debug('navigation.restart.deferred.inactive-tab', pendingNavigationRestart);
     return session;
   }
 
-  const nextUrl = tab.url || url || session.tabUrl || '';
   pendingNavigationRestart = null;
   debug('navigation.restart.begin', { tabId, url: nextUrl, reason });
-  noteTranscriptUrlChange(nextUrl);
   setStatus('starting', {
     tabId,
     tabUrl: nextUrl,
@@ -399,7 +474,10 @@ async function startSession(request = {}) {
     await stopSession();
   }
 
-  startTranscriptRecording(settings, tab);
+  await recoverInterruptedTranscripts('new-session-started').catch((error) => {
+    debug('transcript.recording.recoveryFailed', { message: error?.message || String(error) });
+  });
+  await startTranscriptRecording(settings, tab);
   lastSpeechActivityAt = Date.now();
   lastInactivityCheckAt = 0;
   setStatus('starting', { tabId: tab.id, startedAt: Date.now(), tabUrl: tab.url || '', lastSpeechActivityAt, lastError: null });
@@ -581,6 +659,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabCapture.onStatusChanged.addListener((info) => {
   if (!info || info.tabId !== session.tabId) return;
   if (info.status === 'error') {
+    finalizeTranscriptRecording('tab-capture-error').catch((error) => debug('transcript.recording.saveFailed', { message: error?.message || String(error) }));
     setStatus('error', {
       lastError: {
         code: 'TAB_CAPTURE_ERROR',
