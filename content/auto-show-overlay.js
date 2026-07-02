@@ -3,11 +3,13 @@
   window.__gemiveAutoShowOverlayInstalled = true;
 
   const MESSAGE = {
-    GET_SETTINGS: 'GET_SETTINGS',
-    SETTINGS_UPDATED: 'SETTINGS_UPDATED'
+    GET_SETTINGS: 'GET_SETTINGS'
   };
+  const SETTINGS_KEY = 'gemive.settings';
 
   let autoShowAttemptedForUrl = '';
+  let lastHref = location.href;
+  let cachedSettings = null;
 
   function normalizeDomain(value) {
     return String(value || '')
@@ -47,12 +49,12 @@
   function showOverlayWhenReady(settings, reason, attemptsLeft = 20) {
     if (!shouldAutoShow(settings)) return;
 
-    const key = `${location.href}|${reason}`;
+    const key = location.href;
     if (autoShowAttemptedForUrl === key) return;
 
     if (typeof window.__gemiveOverlayShow === 'function') {
       autoShowAttemptedForUrl = key;
-      window.__gemiveOverlayShow({ settings, collapse: false, source: 'auto-show-domain' });
+      window.__gemiveOverlayShow({ settings, collapse: false, source: `auto-show-domain:${reason}` });
       return;
     }
 
@@ -60,21 +62,36 @@
     setTimeout(() => showOverlayWhenReady(settings, reason, attemptsLeft - 1), 100);
   }
 
+  async function loadSettings() {
+    const response = await chrome.runtime.sendMessage({ type: MESSAGE.GET_SETTINGS });
+    cachedSettings = response?.settings || null;
+    return cachedSettings;
+  }
+
   async function evaluateAutoShow(reason = 'load', providedSettings = null) {
     try {
-      const settings = providedSettings || (await chrome.runtime.sendMessage({ type: MESSAGE.GET_SETTINGS }))?.settings;
+      const settings = providedSettings || cachedSettings || await loadSettings();
       showOverlayWhenReady(settings, reason);
     } catch {
       // Restricted or unloading pages can reject extension messages. Ignore silently.
     }
   }
 
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type === MESSAGE.SETTINGS_UPDATED) {
+  if (chrome.storage?.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes[SETTINGS_KEY]?.newValue) return;
+      cachedSettings = changes[SETTINGS_KEY].newValue;
       autoShowAttemptedForUrl = '';
-      evaluateAutoShow('settings-updated', message.payload);
-    }
-  });
+      evaluateAutoShow('settings-changed', cachedSettings);
+    });
+  }
+
+  setInterval(() => {
+    if (location.href === lastHref) return;
+    lastHref = location.href;
+    autoShowAttemptedForUrl = '';
+    evaluateAutoShow('url-changed');
+  }, 1000);
 
   evaluateAutoShow('load');
 })();
