@@ -25,6 +25,14 @@ let activeTabId = null;
 
 let settings = null;
 let locale = 'zh-Hant';
+let pendingRangePatch = null;
+let rangeSaveTimer = null;
+let rangeSaveInFlight = false;
+let rangeInteractionUntil = 0;
+let rangeIdleTimer = null;
+
+const RANGE_SAVE_THROTTLE_MS = 120;
+const RANGE_RENDER_SUPPRESS_MS = 350;
 
 function sendMessage(message) {
   return chrome.runtime.sendMessage(message);
@@ -43,6 +51,30 @@ async function resolveActiveTabId() {
 function getStatusName(value) {
   if (typeof value === 'object' && value) return value.status || 'idle';
   return value || 'idle';
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function mergePatch(base = {}, patch = {}) {
+  const output = { ...(base || {}) };
+  for (const [key, value] of Object.entries(patch || {})) {
+    output[key] = isPlainObject(output[key]) && isPlainObject(value) ? mergePatch(output[key], value) : value;
+  }
+  return output;
+}
+
+function markRangeInteraction() {
+  rangeInteractionUntil = Date.now() + RANGE_RENDER_SUPPRESS_MS;
+  clearTimeout(rangeIdleTimer);
+  rangeIdleTimer = setTimeout(() => {
+    rangeInteractionUntil = 0;
+  }, RANGE_RENDER_SUPPRESS_MS);
+}
+
+function shouldSuppressSettingsRender() {
+  return Date.now() < rangeInteractionUntil;
 }
 
 function isBusyStatus(status) {
@@ -114,9 +146,67 @@ function renderSettings(next) {
   updateButtons(currentPopupStatus);
 }
 
-async function updateSettings(patch) {
+async function updateSettings(patch, { rerender = true } = {}) {
   const response = await sendMessage({ type: MESSAGE.UPDATE_SETTINGS, patch });
-  if (response?.ok) renderSettings(response.settings);
+  if (response?.ok) {
+    settings = response.settings;
+    if (rerender && !shouldSuppressSettingsRender()) renderSettings(response.settings);
+    return response.settings;
+  }
+  return null;
+}
+
+async function flushRangeSettingsUpdate() {
+  clearTimeout(rangeSaveTimer);
+  rangeSaveTimer = null;
+
+  if (!pendingRangePatch || rangeSaveInFlight) return;
+
+  const patch = pendingRangePatch;
+  pendingRangePatch = null;
+  rangeSaveInFlight = true;
+
+  try {
+    await updateSettings(patch, { rerender: false });
+  } finally {
+    rangeSaveInFlight = false;
+    if (pendingRangePatch) {
+      rangeSaveTimer = setTimeout(flushRangeSettingsUpdate, RANGE_SAVE_THROTTLE_MS);
+    }
+  }
+}
+
+function queueRangeSettingsUpdate(patch) {
+  markRangeInteraction();
+  settings = mergePatch(settings, patch);
+  pendingRangePatch = mergePatch(pendingRangePatch, patch);
+
+  if (!rangeSaveTimer && !rangeSaveInFlight) {
+    rangeSaveTimer = setTimeout(flushRangeSettingsUpdate, RANGE_SAVE_THROTTLE_MS);
+  }
+}
+
+function commitRangeSettingsUpdate(patch) {
+  markRangeInteraction();
+  settings = mergePatch(settings, patch);
+  pendingRangePatch = mergePatch(pendingRangePatch, patch);
+  flushRangeSettingsUpdate();
+}
+
+function updateOriginalVolumeFromInput({ commit = false } = {}) {
+  const value = Number(els.originalVolume.value);
+  els.originalVolumeValue.textContent = `${value}%`;
+  const patch = { audio: { originalVolume: value / 100 } };
+  if (commit) commitRangeSettingsUpdate(patch);
+  else queueRangeSettingsUpdate(patch);
+}
+
+function updateInterpretationVolumeFromInput({ commit = false } = {}) {
+  const value = Number(els.interpretationVolume.value);
+  els.interpretationVolumeValue.textContent = `${value}%`;
+  const patch = { audio: { interpretationVolume: value / 100 } };
+  if (commit) commitRangeSettingsUpdate(patch);
+  else queueRangeSettingsUpdate(patch);
 }
 
 async function start() {
@@ -215,14 +305,10 @@ async function init() {
 
 els.targetLanguage.addEventListener('change', () => updateSettings({ language: { targetLanguageCode: els.targetLanguage.value } }));
 els.playInterpretation.addEventListener('change', () => updateSettings({ audio: { playInterpretation: els.playInterpretation.checked } }));
-els.originalVolume.addEventListener('input', () => {
-  els.originalVolumeValue.textContent = `${els.originalVolume.value}%`;
-  updateSettings({ audio: { originalVolume: Number(els.originalVolume.value) / 100 } });
-});
-els.interpretationVolume.addEventListener('input', () => {
-  els.interpretationVolumeValue.textContent = `${els.interpretationVolume.value}%`;
-  updateSettings({ audio: { interpretationVolume: Number(els.interpretationVolume.value) / 100 } });
-});
+els.originalVolume.addEventListener('input', () => updateOriginalVolumeFromInput());
+els.originalVolume.addEventListener('change', () => updateOriginalVolumeFromInput({ commit: true }));
+els.interpretationVolume.addEventListener('input', () => updateInterpretationVolumeFromInput());
+els.interpretationVolume.addEventListener('change', () => updateInterpretationVolumeFromInput({ commit: true }));
 els.showTranslation.addEventListener('change', () => updateSettings({ subtitles: { showTranslation: els.showTranslation.checked } }));
 els.showSource.addEventListener('change', () => updateSettings({ subtitles: { showSource: els.showSource.checked } }));
 els.saveTranscript.addEventListener('change', () => updateSettings({ privacy: { saveTranscript: els.saveTranscript.checked } }));
@@ -236,7 +322,13 @@ chrome.runtime.onMessage.addListener((message) => {
     setStatus(message.payload || 'idle');
     showOverlayIfCurrentTab();
   }
-  if (message.type === MESSAGE.SETTINGS_UPDATED) renderSettings(message.payload);
+  if (message.type === MESSAGE.SETTINGS_UPDATED) {
+    if (shouldSuppressSettingsRender()) {
+      settings = message.payload;
+      return;
+    }
+    renderSettings(message.payload);
+  }
 });
 
 init().catch((error) => setStatus({ status: 'error', lastError: { message: error.message } }));
