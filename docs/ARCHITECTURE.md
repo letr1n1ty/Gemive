@@ -35,6 +35,31 @@
   - Audio defaults.
   - Privacy controls.
 
+## Typed contracts
+
+Gemive is still loaded directly as browser-readable JavaScript. TypeScript is currently used as a contract and migration layer, not as a build pipeline.
+
+- `core/types.ts`
+  - Shared data shapes for settings, sessions, subtitles, transcripts, and common runtime state.
+- `core/runtime-messages.ts`
+  - Discriminated runtime message contract for background, offscreen, popup, options, and content boundaries.
+
+Runtime JavaScript should continue to use `core/message-types.js` until the project switches to a real `src/` to `dist/` build.
+
+## Settings normalization
+
+All settings read or written through `storage/settings-store.js` pass through `normalizeSettings()`.
+
+This normalization layer clamps user-controlled or persisted values before saving them back to `chrome.storage.local`:
+
+- Audio volume: `0` to `1`
+- Subtitle font size and max lines
+- Floating window size, opacity, blur, radius, and position
+- Advanced audio chunk and jitter buffer values
+- Locale, provider, model, color, and transcript folder fields
+
+This protects the extension from stale settings, older versions, malformed patches, and manually edited local storage.
+
 ## Audio flow
 
 ```text
