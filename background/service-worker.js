@@ -34,6 +34,7 @@ let lastInactivityCheckAt = 0;
 const SPEECH_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
 const INACTIVITY_CHECK_THROTTLE_MS = 30 * 1000;
 const TRANSCRIPT_CHECKPOINT_DEBOUNCE_MS = 1000;
+const TRANSCRIPT_CHECKPOINT_INTERVAL_MS = 10 * 60 * 1000;
 
 const DEBUG_LOG_KEY = 'gemive.debug.logs';
 const DEBUG_LOG_LIMIT = 500;
@@ -95,6 +96,7 @@ function localized(settings, key) {
   return t(resolveLocale(settings), key);
 }
 
+// Check if settings has API Key
 function parseApiKeys(value) {
   return String(value || '')
     .split(',')
@@ -242,6 +244,132 @@ async function releaseExistingCaptureIfOwned(tabId) {
   );
 }
 
+function sanitizeDownloadFolder(value) {
+  const cleaned = String(value || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((part) => part.trim().replace(/[<>:"|?*\u0000-\u001F]/g, '-'))
+    .filter((part) => part && part !== '.' && part !== '..')
+    .join('/');
+  return cleaned || 'Gemive/Transcripts';
+}
+
+function sanitizeFilenamePart(value, fallback = 'session') {
+  const cleaned = String(value || '')
+    .normalize('NFKC')
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+    .replace(/[. ]+$/g, '');
+  return cleaned || fallback;
+}
+
+function timestampForFilename(date = new Date()) {
+  return date.toISOString().replace(/[:.]/g, '-');
+}
+
+function dateFolder(value = Date.now()) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function formatIso(value) {
+  if (!value) return '';
+  try { return new Date(value).toISOString(); } catch { return String(value); }
+}
+
+function formatDuration(ms) {
+  const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+function mdText(value) {
+  return String(value || '').trim() || '_No content captured._';
+}
+
+function transcriptEntryToMarkdown(entry, { titlePrefix = 'Gemive Transcript' } = {}) {
+  const lines = [
+    `# ${titlePrefix}`,
+    '',
+    `Exported: ${new Date().toISOString()}`,
+    ''
+  ];
+
+  const startedAt = formatIso(entry.startedAt || entry.receivedAt || entry.createdAt);
+  const endedAt = formatIso(entry.endedAt);
+  if (entry.tabTitle) lines.push(`- Title: ${entry.tabTitle}`);
+  if (startedAt) lines.push(`- Started: ${startedAt}`);
+  if (endedAt) lines.push(`- Stopped: ${endedAt}`);
+  if (entry.durationMs !== undefined) lines.push(`- Duration: ${formatDuration(entry.durationMs)}`);
+  if (entry.tabUrl) lines.push(`- URL: ${entry.tabUrl}`);
+  if (Array.isArray(entry.urlHistory) && entry.urlHistory.length > 1) {
+    lines.push('- URL history:');
+    entry.urlHistory.forEach((item) => {
+      lines.push(`  - ${formatIso(item.at)} ${item.url}`);
+    });
+  }
+  if (entry.sourceLanguageCode) lines.push(`- Source language: ${entry.sourceLanguageCode}`);
+  if (entry.targetLanguageCode) lines.push(`- Target language: ${entry.targetLanguageCode}`);
+  if (entry.stopReason) lines.push(`- Stop reason: ${entry.stopReason}`);
+  if (entry.checkpointIndex) lines.push(`- Checkpoint: ${entry.checkpointIndex}`);
+
+  lines.push('', '## Translation', '', mdText(entry.translationText), '', '## Source', '', mdText(entry.sourceText), '');
+  return lines.join('\n');
+}
+
+async function downloadMarkdownFile({ markdown, filename }) {
+  if (!chrome.downloads?.download) throw new Error('Downloads API is unavailable. Reload the extension after granting the downloads permission.');
+  const url = `data:text/markdown;charset=utf-8,${encodeURIComponent(markdown)}`;
+  await chrome.downloads.download({
+    url,
+    filename,
+    saveAs: false,
+    conflictAction: 'uniquify'
+  });
+}
+
+async function autoExportTranscriptEntry(entry, { kind = 'session' } = {}) {
+  if (!entry?.autoExportTranscript) return;
+  if (!entry.sourceText && !entry.translationText) return;
+  const folder = sanitizeDownloadFolder(entry.transcriptFolder);
+  const title = sanitizeFilenamePart(entry.tabTitle || new URL(entry.tabUrl || 'https://example.invalid').hostname, 'session');
+  const stamp = timestampForFilename(new Date(entry.endedAt || Date.now()));
+  const suffix = kind === 'checkpoint' ? `checkpoint-${String(entry.checkpointIndex || 1).padStart(3, '0')}` : 'session';
+  const filename = `${folder}/${dateFolder(entry.startedAt || Date.now())}/${stamp}-${title}-${suffix}.md`;
+  const markdown = transcriptEntryToMarkdown(entry, {
+    titlePrefix: kind === 'checkpoint' ? 'Gemive Transcript Checkpoint' : 'Gemive Transcript'
+  });
+  await downloadMarkdownFile({ markdown, filename });
+}
+
+function normalizeTranscriptText(value) {
+  return String(value || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function overlapLength(left, right) {
+  const a = normalizeTranscriptText(left);
+  const b = normalizeTranscriptText(right);
+  const max = Math.min(240, a.length, b.length);
+  for (let size = max; size >= 8; size -= 1) {
+    if (a.slice(-size).toLowerCase() === b.slice(0, size).toLowerCase()) return size;
+  }
+  return 0;
+}
+
+function appendRollingTranscript(committed, snapshot) {
+  const current = normalizeTranscriptText(committed);
+  const incoming = normalizeTranscriptText(snapshot);
+  if (!incoming) return current;
+  if (!current) return incoming;
+  if (current.includes(incoming)) return current;
+  if (incoming.includes(current)) return incoming;
+  const overlap = overlapLength(current, incoming);
+  const tail = overlap ? incoming.slice(overlap) : incoming;
+  return normalizeTranscriptText(`${current}\n\n${tail}`);
+}
+
 async function flushTranscriptCheckpoint(reason = 'checkpoint') {
   clearTimeout(transcriptCheckpointTimer);
   transcriptCheckpointTimer = null;
@@ -294,33 +422,35 @@ async function startTranscriptRecording(settings, tab) {
     lastTranscriptSnapshotSignature = '';
     return;
   }
-  const startedAt = Date.now();
+  const now = Date.now();
   activeTranscriptSession = {
     id: crypto.randomUUID(),
     type: 'session',
     status: 'active',
-    startedAt,
-    createdAt: startedAt,
-    updatedAt: startedAt,
+    startedAt: now,
+    createdAt: now,
+    updatedAt: now,
     endedAt: null,
     tabId: tab?.id ?? null,
     tabTitle: tab?.title || '',
     tabUrl: tab?.url || '',
-    urlHistory: tab?.url ? [{ url: tab.url, at: startedAt }] : [],
+    urlHistory: tab?.url ? [{ url: tab.url, at: now }] : [],
     sourceText: '',
     translationText: '',
     sourceLanguageCode: '',
     targetLanguageCode: settings.language?.targetLanguageCode || '',
     updates: [],
-    stopReason: ''
+    stopReason: '',
+    autoExportTranscript: settings.privacy?.autoExportTranscript !== false,
+    transcriptFolder: sanitizeDownloadFolder(settings.privacy?.transcriptFolder),
+    lastCheckpointAt: now,
+    checkpointIndex: 0,
+    checkpointSourceLength: 0,
+    checkpointTranslationLength: 0
   };
   lastTranscriptSnapshotSignature = '';
   await flushTranscriptCheckpoint('start');
-  debug('transcript.recording.started', { tabId: tab?.id, saveTranscript: true });
-}
-
-function normalizeTranscriptText(value) {
-  return String(value || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  debug('transcript.recording.started', { tabId: tab?.id, saveTranscript: true, autoExportTranscript: activeTranscriptSession.autoExportTranscript });
 }
 
 function updateTranscriptRecording(payload) {
@@ -334,8 +464,8 @@ function updateTranscriptRecording(payload) {
   lastTranscriptSnapshotSignature = signature;
 
   const updatedAt = Date.now();
-  activeTranscriptSession.translationText = translationText || activeTranscriptSession.translationText;
-  activeTranscriptSession.sourceText = sourceText || activeTranscriptSession.sourceText;
+  activeTranscriptSession.translationText = appendRollingTranscript(activeTranscriptSession.translationText, translationText);
+  activeTranscriptSession.sourceText = appendRollingTranscript(activeTranscriptSession.sourceText, sourceText);
   activeTranscriptSession.sourceLanguageCode = payload?.source?.languageCode || activeTranscriptSession.sourceLanguageCode || '';
   activeTranscriptSession.targetLanguageCode = payload?.translation?.languageCode || activeTranscriptSession.targetLanguageCode || '';
   activeTranscriptSession.updatedAt = updatedAt;
@@ -347,6 +477,38 @@ function updateTranscriptRecording(payload) {
   if (activeTranscriptSession.updates.length > 120) activeTranscriptSession.updates.shift();
   scheduleTranscriptCheckpoint('subtitle-update');
   return true;
+}
+
+async function maybeCheckpointTranscriptRecording() {
+  const current = activeTranscriptSession;
+  if (!current?.autoExportTranscript) return;
+  const now = Date.now();
+  if (now - current.lastCheckpointAt < TRANSCRIPT_CHECKPOINT_INTERVAL_MS) return;
+
+  const sourceDelta = normalizeTranscriptText(current.sourceText.slice(current.checkpointSourceLength));
+  const translationDelta = normalizeTranscriptText(current.translationText.slice(current.checkpointTranslationLength));
+  current.lastCheckpointAt = now;
+  if (!sourceDelta && !translationDelta) return;
+
+  current.checkpointIndex += 1;
+  const checkpoint = {
+    ...current,
+    type: 'checkpoint',
+    endedAt: now,
+    durationMs: Math.max(0, now - current.startedAt),
+    sourceText: sourceDelta,
+    translationText: translationDelta,
+    stopReason: 'checkpoint'
+  };
+
+  try {
+    await autoExportTranscriptEntry(checkpoint, { kind: 'checkpoint' });
+    current.checkpointSourceLength = current.sourceText.length;
+    current.checkpointTranslationLength = current.translationText.length;
+    debug('transcript.checkpoint.exported', { checkpointIndex: current.checkpointIndex, durationMs: checkpoint.durationMs });
+  } catch (error) {
+    debug('transcript.checkpoint.exportFailed', { message: error?.message || String(error) });
+  }
 }
 
 async function finalizeTranscriptRecording(reason = 'stop') {
@@ -377,6 +539,13 @@ async function finalizeTranscriptRecording(reason = 'stop') {
     hasSource: Boolean(current.sourceText),
     hasTranslation: Boolean(current.translationText)
   });
+
+  try {
+    await autoExportTranscriptEntry(current, { kind: 'session' });
+    debug('transcript.autoExport.saved', { reason, durationMs: current.durationMs });
+  } catch (error) {
+    debug('transcript.autoExport.failed', { message: error?.message || String(error) });
+  }
 }
 
 function noteTranscriptUrlChange(url) {
@@ -526,12 +695,9 @@ async function stopSession(options = {}) {
   return session;
 }
 
-function normalizeText(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
 async function maybePersistTranscript(payload) {
   updateTranscriptRecording(payload);
+  await maybeCheckpointTranscriptRecording();
 }
 
 function handleOffscreenStatus(payload) {
