@@ -5,9 +5,25 @@ function base64ToBytes(base64) {
   return bytes;
 }
 
+function finiteNumber(value, fallback) {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+}
+
+function numberInRange(value, fallback, min, max) {
+  return Math.min(max, Math.max(min, finiteNumber(value, fallback)));
+}
+
+function integerInRange(value, fallback, min, max) {
+  return Math.round(numberInRange(value, fallback, min, max));
+}
+
 function pcm16BytesToFloat32(bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const length = Math.floor(bytes.byteLength / 2);
+  const usableByteLength = bytes.byteLength - (bytes.byteLength % 2);
+  if (usableByteLength <= 0) return new Float32Array();
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, usableByteLength);
+  const length = Math.floor(usableByteLength / 2);
   const floats = new Float32Array(length);
   for (let i = 0; i < length; i += 1) {
     const int = view.getInt16(i * 2, true);
@@ -19,10 +35,10 @@ function pcm16BytesToFloat32(bytes) {
 export class Pcm16Player {
   constructor(audioContext, { sampleRate = 24000, jitterBufferMs = 300, volume = 0.5 } = {}) {
     this.audioContext = audioContext;
-    this.sampleRate = sampleRate;
-    this.jitterBufferSeconds = jitterBufferMs / 1000;
+    this.sampleRate = integerInRange(sampleRate, 24000, 8000, 96000);
+    this.jitterBufferSeconds = numberInRange(jitterBufferMs, 300, 0, 3000) / 1000;
     this.gain = audioContext.createGain();
-    this.gain.gain.value = volume;
+    this.gain.gain.value = numberInRange(volume, 0.5, 0, 1);
     this.gain.connect(audioContext.destination);
     this.nextPlaybackTime = 0;
     this.sources = new Set();
@@ -30,16 +46,24 @@ export class Pcm16Player {
   }
 
   setVolume(volume) {
-    this.gain.gain.value = Math.max(0, Math.min(1, Number(volume)));
+    this.gain.gain.value = numberInRange(volume, 0.5, 0, 1);
   }
 
   setEnabled(enabled) {
     this.enabled = Boolean(enabled);
+    if (!this.enabled) this.stop();
   }
 
   playBase64(base64) {
-    if (!this.enabled || !base64) return;
-    const bytes = base64ToBytes(base64);
+    if (!this.enabled || !base64 || this.audioContext.state === 'closed') return;
+
+    let bytes;
+    try {
+      bytes = base64ToBytes(base64);
+    } catch {
+      return;
+    }
+
     const samples = pcm16BytesToFloat32(bytes);
     if (!samples.length) return;
 
@@ -52,6 +76,9 @@ export class Pcm16Player {
     source.onended = () => this.sources.delete(source);
 
     const now = this.audioContext.currentTime;
+    if (this.nextPlaybackTime < now || this.nextPlaybackTime - now > 4) {
+      this.nextPlaybackTime = now + this.jitterBufferSeconds;
+    }
     const startAt = Math.max(now + this.jitterBufferSeconds, this.nextPlaybackTime);
     source.start(startAt);
     this.nextPlaybackTime = startAt + buffer.duration;
@@ -63,11 +90,15 @@ export class Pcm16Player {
       try { source.stop(); } catch {}
     }
     this.sources.clear();
-    this.nextPlaybackTime = this.audioContext.currentTime;
+    if (this.audioContext.state !== 'closed') {
+      this.nextPlaybackTime = this.audioContext.currentTime;
+    } else {
+      this.nextPlaybackTime = 0;
+    }
   }
 
   disconnect() {
     this.stop();
-    this.gain.disconnect();
+    try { this.gain.disconnect(); } catch {}
   }
 }
