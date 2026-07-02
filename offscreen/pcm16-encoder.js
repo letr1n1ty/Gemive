@@ -9,14 +9,25 @@ export function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+function finiteNumber(value, fallback) {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+}
+
+function integerInRange(value, fallback, min, max) {
+  return Math.round(Math.min(max, Math.max(min, finiteNumber(value, fallback))));
+}
+
 export function clampSample(sample) {
-  return Math.max(-1, Math.min(1, sample));
+  const next = finiteNumber(sample, 0);
+  return Math.max(-1, Math.min(1, next));
 }
 
 export function floatToPcm16(samples) {
-  const output = new Int16Array(samples.length);
-  for (let i = 0; i < samples.length; i += 1) {
-    const sample = clampSample(samples[i]);
+  const input = samples instanceof Float32Array ? samples : new Float32Array(samples || []);
+  const output = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i += 1) {
+    const sample = clampSample(input[i]);
     output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
   }
   return output;
@@ -33,16 +44,17 @@ function concatFloat32(chunks, totalLength) {
 }
 
 export class Pcm16Chunker {
-  constructor({ inputSampleRate, outputSampleRate = 16000, chunkMs = 100 }) {
-    this.inputSampleRate = inputSampleRate;
-    this.outputSampleRate = outputSampleRate;
-    this.chunkMs = chunkMs;
-    this.inputChunkSize = Math.max(1, Math.round((inputSampleRate * chunkMs) / 1000));
+  constructor({ inputSampleRate, outputSampleRate = 16000, chunkMs = 100 } = {}) {
+    this.inputSampleRate = integerInRange(inputSampleRate, 48000, 8000, 192000);
+    this.outputSampleRate = integerInRange(outputSampleRate, 16000, 8000, 96000);
+    this.chunkMs = integerInRange(chunkMs, 100, 20, 1000);
+    this.inputChunkSize = Math.max(1, Math.round((this.inputSampleRate * this.chunkMs) / 1000));
     this.pending = [];
     this.pendingLength = 0;
   }
 
   push(samples) {
+    if (!(samples instanceof Float32Array) || samples.length === 0) return [];
     this.pending.push(samples);
     this.pendingLength += samples.length;
     const chunks = [];
@@ -60,13 +72,13 @@ export class Pcm16Chunker {
   }
 
   encodeInputBlock(input) {
-    const outputLength = Math.round((input.length * this.outputSampleRate) / this.inputSampleRate);
+    const outputLength = Math.max(1, Math.round((input.length * this.outputSampleRate) / this.inputSampleRate));
     const resampled = new Float32Array(outputLength);
     const ratio = this.inputSampleRate / this.outputSampleRate;
 
     for (let i = 0; i < outputLength; i += 1) {
       const sourceIndex = i * ratio;
-      const left = Math.floor(sourceIndex);
+      const left = Math.min(Math.floor(sourceIndex), input.length - 1);
       const right = Math.min(left + 1, input.length - 1);
       const weight = sourceIndex - left;
       resampled[i] = input[left] * (1 - weight) + input[right] * weight;
