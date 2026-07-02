@@ -42,6 +42,7 @@ export const DEFAULT_SETTINGS = {
   },
   privacy: {
     saveTranscript: true,
+    autoExportTranscript: true,
     transcriptFolder: 'Gemive/Transcripts'
   },
   advanced: {
