@@ -10,7 +10,7 @@ const ids = [
   'playInterpretation', 'showSource', 'autoCollapseOverlay', 'autoShowOverlay', 'autoShowDomains', 'translationFontSize', 'sourceFontSize', 'translationMaxLines', 'sourceMaxLines',
   'translationColor', 'sourceColor', 'windowWidth', 'windowHeight', 'backgroundColor', 'opacity', 'opacityValue',
   'blur', 'blurValue', 'borderRadius', 'saveTranscript', 'transcriptFolder', 'exportTranscript', 'clearTranscript', 'resetExperience',
-  'refreshDebugLogs', 'copyDebugLogs', 'clearDebugLogs', 'debugLogs', 'saveState'
+  'debugLogging', 'refreshDebugLogs', 'copyDebugLogs', 'clearDebugLogs', 'debugLogs', 'saveState'
 ];
 const els = Object.fromEntries(ids.map((id) => [id, document.querySelector(`#${id}`)]));
 let settings = null;
@@ -272,8 +272,9 @@ function renderSettings(next) {
   els.blur.value = Math.round(settings.window.blur ?? 22);
   els.blurValue.textContent = `${els.blur.value}px`;
   els.borderRadius.value = settings.window.borderRadius;
-  els.saveTranscript.checked = settings.privacy.saveTranscript;
+  els.saveTranscript.checked = Boolean(settings.privacy?.saveTranscript);
   els.transcriptFolder.value = settings.privacy.transcriptFolder || 'Gemive/Transcripts';
+  els.debugLogging.checked = Boolean(settings.debug?.saveLogs);
 }
 
 async function updateSettings(patch, immediate = false, { rerender = true } = {}) {
@@ -360,6 +361,7 @@ function bind() {
   els.borderRadius.addEventListener('input', () => updateSettings({ window: { borderRadius: Number(els.borderRadius.value) } }, false, { rerender: false }));
   els.saveTranscript.addEventListener('change', () => updateSettings({ privacy: { saveTranscript: els.saveTranscript.checked } }, true));
   els.transcriptFolder.addEventListener('change', () => updateSettings({ privacy: { transcriptFolder: sanitizeDownloadFolder(els.transcriptFolder.value) } }, true));
+  els.debugLogging.addEventListener('change', () => updateSettings({ debug: { saveLogs: els.debugLogging.checked } }, true));
   els.exportTranscript.addEventListener('click', exportTranscripts);
   els.resetExperience.addEventListener('click', () => updateSettings({
     audio: DEFAULT_SETTINGS.audio,
