@@ -7,6 +7,7 @@
   - Creates offscreen document.
   - Calls `chrome.tabCapture.getMediaStreamId()` after user action.
   - Injects or wakes the overlay content script.
+  - Coordinates URL-change restart, inactivity shutdown, transcript persistence, and debug logs.
 
 - `offscreen/offscreen.js`
   - Receives stream ID.
@@ -43,10 +44,32 @@ Gemive is still loaded directly as browser-readable JavaScript. TypeScript is cu
   - Shared data shapes for settings, sessions, subtitles, transcripts, and common runtime state.
 - `core/runtime-messages.ts`
   - Discriminated runtime message contract for background, offscreen, popup, options, and content boundaries.
+- `background/background-types.ts`
+  - Background service worker contracts for session state, navigation restart requests, debug logs, stop/start options, and transcript recording state.
 - `offscreen/audio-types.ts`
   - Audio pipeline contracts for router payloads, AudioWorklet messages, PCM chunks, player options, and Gemini Live client callbacks.
 
 Runtime JavaScript should continue to use `core/message-types.js` until the project switches to a real `src/` to `dist/` build.
+
+## Background service worker lifecycle
+
+The background worker is the session coordinator. It should avoid ad-hoc state mutation and route session changes through a small set of helpers:
+
+- `createIdleSession()` defines the canonical empty session shape.
+- `updateSession()` validates status, tab id, URL, and error fields before mutating the in-memory session.
+- `setStatus()` updates state, writes debug logs, and relays status to runtime listeners and the active overlay tab.
+- `createNavigationRestart()` normalizes pending URL-change restart requests before they enter the debounce queue.
+- `getMessagePayload()` prevents message handlers from assuming every runtime message has a valid object payload.
+
+The worker owns these long-running flows:
+
+- Start/stop session orchestration.
+- Offscreen document creation and cleanup.
+- Existing capture release before acquiring a new stream id.
+- URL-change restart while keeping the overlay alive.
+- 10-minute speech inactivity shutdown.
+- Transcript snapshot persistence.
+- Sanitized debug log persistence.
 
 ## Settings normalization
 
