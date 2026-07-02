@@ -40,6 +40,7 @@ export class AudioRouter {
     this.warmupGemini = null;
     this.transcriptBuffer = new TranscriptBuffer();
     this.settings = null;
+    this.activeGeminiSettings = null;
     this.tabId = null;
     this.stopRequested = false;
     this.translationEpoch = 0;
@@ -165,6 +166,7 @@ export class AudioRouter {
     this.player.setEnabled(settings.audio.playInterpretation);
 
     this.translationEpoch += 1;
+    this.activeGeminiSettings = settings;
     this.gemini = this.createGeminiClient(settings, this.translationEpoch);
 
     this.workletNode.port.onmessage = (event) => this.handleWorkletMessage(event.data);
@@ -196,7 +198,8 @@ export class AudioRouter {
 
   async updateSettings(settings) {
     const previousSettings = this.settings;
-    const shouldReconnectGemini = this.gemini && requiresGeminiReconnect(previousSettings, settings);
+    const previousGeminiSettings = this.activeGeminiSettings || previousSettings;
+    const shouldReconnectGemini = this.gemini && requiresGeminiReconnect(previousGeminiSettings, settings);
 
     this.settings = settings;
     if (this.originalGain) this.originalGain.gain.value = settings.audio.originalVolume;
@@ -205,7 +208,7 @@ export class AudioRouter {
       this.player.setEnabled(settings.audio.playInterpretation);
     }
 
-    if (shouldReconnectGemini) await this.switchGeminiClient(settings, previousSettings);
+    if (shouldReconnectGemini) await this.switchGeminiClient(settings, previousGeminiSettings);
   }
 
   async switchGeminiClient(settings, previousSettings) {
@@ -241,6 +244,7 @@ export class AudioRouter {
 
       this.translationEpoch = nextEpoch;
       this.gemini = nextClient;
+      this.activeGeminiSettings = settings;
       this.warmupGemini = null;
       this.transcriptBuffer = new TranscriptBuffer();
       this.player?.stop();
@@ -308,6 +312,7 @@ export class AudioRouter {
     this.player = null;
     this.gemini = null;
     this.warmupGemini = null;
+    this.activeGeminiSettings = null;
     this.transcriptBuffer = new TranscriptBuffer();
     if (!silent && requestedByUser) this.sendStatus('idle');
     this.debug('stop.complete', { requestedByUser, silent });
