@@ -11,6 +11,14 @@ function debug(event, data = {}) {
   console.debug('[Gemive offscreen]', event, data);
 }
 
+function reportAsyncSettingsError(error) {
+  debug('settings.update.error', { message: error?.message || String(error), stack: error?.stack || '' });
+  chrome.runtime.sendMessage({
+    type: MESSAGE.SESSION_ERROR,
+    error: { code: 'OFFSCREEN_SETTINGS_ERROR', message: error?.message || String(error), at: Date.now() }
+  }).catch(() => undefined);
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // Offscreen receives many broadcast runtime messages. Only target:'offscreen'
   // belongs here. Everything else must be ignored so it cannot race the
@@ -32,7 +40,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       case MESSAGE.SETTINGS_UPDATED:
         debug('settings.updated');
-        await router.updateSettings(message.payload);
+        router.updateSettings(message.payload).catch(reportAsyncSettingsError);
         sendResponse({ ok: true });
         break;
       default:
