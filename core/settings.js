@@ -25,8 +25,8 @@ export const DEFAULT_SETTINGS = {
   window: {
     x: null,
     y: null,
-    width: 460,
-    height: 260,
+    width: 160,
+    height: 90,
     backgroundColor: '#000000',
     opacity: 0.72,
     blur: 22,
