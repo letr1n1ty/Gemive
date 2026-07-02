@@ -7,7 +7,7 @@ import { UI_LOCALES, formatUiLocaleLabel, localizeDocument, resolveLocale, t } f
 const ids = [
   'uiLocale', 'apiKey', 'toggleApiVisibility', 'saveApiKey', 'apiKeyCheck', 'apiHint', 'targetLanguage', 'echoTargetLanguage',
   'originalVolume', 'originalVolumeValue', 'interpretationVolume', 'interpretationVolumeValue',
-  'playInterpretation', 'showSource', 'autoCollapseOverlay', 'translationFontSize', 'sourceFontSize', 'translationMaxLines', 'sourceMaxLines',
+  'playInterpretation', 'showSource', 'autoCollapseOverlay', 'autoShowOverlay', 'autoShowDomains', 'translationFontSize', 'sourceFontSize', 'translationMaxLines', 'sourceMaxLines',
   'translationColor', 'sourceColor', 'windowWidth', 'windowHeight', 'backgroundColor', 'opacity', 'opacityValue',
   'blur', 'blurValue', 'borderRadius', 'saveTranscript', 'transcriptFolder', 'exportTranscript', 'clearTranscript', 'resetExperience',
   'refreshDebugLogs', 'copyDebugLogs', 'clearDebugLogs', 'debugLogs', 'saveState'
@@ -121,6 +121,25 @@ function sanitizeDownloadFolder(value) {
   return cleaned || 'Gemive/Transcripts';
 }
 
+function normalizeDomain(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^\*\./, '')
+    .replace(/\/.*$/, '')
+    .replace(/:\d+$/, '')
+    .toLowerCase();
+}
+
+function sanitizeAutoShowDomains(value) {
+  const items = String(value || '')
+    .split(/[\n,]+/)
+    .map(normalizeDomain)
+    .filter(Boolean)
+    .filter((domain) => domain !== '*' && domain !== '.');
+  return [...new Set(items)].join('\n');
+}
+
 function timestampForFilename(date = new Date()) {
   return date.toISOString().replace(/[:.]/g, '-');
 }
@@ -173,7 +192,6 @@ function transcriptToMarkdown(transcripts) {
 
   return lines.join('\n');
 }
-
 
 async function exportTranscripts() {
   const originalText = els.exportTranscript.textContent;
@@ -238,6 +256,8 @@ function renderSettings(next) {
   els.playInterpretation.checked = settings.audio.playInterpretation;
   els.showSource.checked = settings.subtitles.showSource;
   els.autoCollapseOverlay.checked = Boolean(settings.window.autoCollapse);
+  els.autoShowOverlay.checked = Boolean(settings.automation?.autoShowOverlay);
+  els.autoShowDomains.value = sanitizeAutoShowDomains(settings.automation?.autoShowDomains || '');
   els.translationFontSize.value = settings.subtitles.translationFontSize;
   els.sourceFontSize.value = settings.subtitles.sourceFontSize;
   els.translationMaxLines.value = settings.subtitles.translationMaxLines ?? 6;
@@ -318,6 +338,8 @@ function bind() {
   els.playInterpretation.addEventListener('change', () => updateSettings({ audio: { playInterpretation: els.playInterpretation.checked } }, true));
   els.showSource.addEventListener('change', () => updateSettings({ subtitles: { showSource: els.showSource.checked } }, true));
   els.autoCollapseOverlay.addEventListener('change', () => updateSettings({ window: { autoCollapse: els.autoCollapseOverlay.checked } }, true));
+  els.autoShowOverlay.addEventListener('change', () => updateSettings({ automation: { autoShowOverlay: els.autoShowOverlay.checked } }, true));
+  els.autoShowDomains.addEventListener('change', () => updateSettings({ automation: { autoShowDomains: sanitizeAutoShowDomains(els.autoShowDomains.value) } }, true));
   els.translationFontSize.addEventListener('input', () => updateSettings({ subtitles: { translationFontSize: Number(els.translationFontSize.value) } }, false, { rerender: false }));
   els.sourceFontSize.addEventListener('input', () => updateSettings({ subtitles: { sourceFontSize: Number(els.sourceFontSize.value) } }, false, { rerender: false }));
   els.translationMaxLines.addEventListener('input', () => updateSettings({ subtitles: { translationMaxLines: Number(els.translationMaxLines.value) } }, false, { rerender: false }));
