@@ -1,6 +1,7 @@
 import { SUPPORTED_LANGUAGES, formatLanguageLabel } from '../core/language-registry.js';
 import { MESSAGE } from '../core/message-types.js';
 import { localizeDocument, resolveLocale, t } from '../core/i18n.js';
+import { mergePatch, percentToUnit, unitToPercent } from '../core/ui-settings.js';
 
 const els = {
   status: document.querySelector('#status'),
@@ -19,10 +20,14 @@ const els = {
   openOptions: document.querySelector('#openOptions')
 };
 
+const BUSY_STATUSES = new Set(['starting', 'capturing', 'connecting', 'translating', 'stopping']);
+const KNOWN_STATUSES = new Set(['idle', 'starting', 'capturing', 'connecting', 'translating', 'stopping', 'error']);
+const RANGE_SAVE_THROTTLE_MS = 120;
+const RANGE_RENDER_SUPPRESS_MS = 350;
+
 let currentPopupStatus = 'idle';
 let currentSession = { status: 'idle', tabId: null };
 let activeTabId = null;
-
 let settings = null;
 let locale = 'zh-Hant';
 let pendingRangePatch = null;
@@ -31,11 +36,13 @@ let rangeSaveInFlight = false;
 let rangeInteractionUntil = 0;
 let rangeIdleTimer = null;
 
-const RANGE_SAVE_THROTTLE_MS = 120;
-const RANGE_RENDER_SUPPRESS_MS = 350;
-
 function sendMessage(message) {
   return chrome.runtime.sendMessage(message);
+}
+
+function normalizeStatus(value) {
+  const status = typeof value === 'object' && value ? value.status : value;
+  return KNOWN_STATUSES.has(status) ? status : 'idle';
 }
 
 async function resolveActiveTabId() {
@@ -46,23 +53,6 @@ async function resolveActiveTabId() {
     activeTabId = null;
   }
   return activeTabId;
-}
-
-function getStatusName(value) {
-  if (typeof value === 'object' && value) return value.status || 'idle';
-  return value || 'idle';
-}
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function mergePatch(base = {}, patch = {}) {
-  const output = { ...(base || {}) };
-  for (const [key, value] of Object.entries(patch || {})) {
-    output[key] = isPlainObject(output[key]) && isPlainObject(value) ? mergePatch(output[key], value) : value;
-  }
-  return output;
 }
 
 function markRangeInteraction() {
@@ -78,7 +68,7 @@ function shouldSuppressSettingsRender() {
 }
 
 function isBusyStatus(status) {
-  return status === 'starting' || status === 'capturing' || status === 'connecting' || status === 'translating' || status === 'stopping';
+  return BUSY_STATUSES.has(status);
 }
 
 function isCurrentTabSession() {
@@ -117,29 +107,39 @@ function applyLocale() {
 }
 
 function renderLanguages() {
+  if (!els.targetLanguage) return;
   const previous = els.targetLanguage.value || settings?.language?.targetLanguageCode;
   const popular = SUPPORTED_LANGUAGES.filter((language) => language.popular);
   const others = SUPPORTED_LANGUAGES.filter((language) => !language.popular);
   els.targetLanguage.innerHTML = '';
+
   const popularGroup = document.createElement('optgroup');
   popularGroup.label = t(locale, 'popularLanguages');
   for (const language of popular) popularGroup.appendChild(new Option(formatLanguageLabel(language), language.code));
+
   const allGroup = document.createElement('optgroup');
   allGroup.label = t(locale, 'allLanguages');
   for (const language of others) allGroup.appendChild(new Option(formatLanguageLabel(language), language.code));
+
   els.targetLanguage.append(popularGroup, allGroup);
   if (previous) els.targetLanguage.value = previous;
 }
 
 function renderSettings(next) {
+  if (!next) return;
   settings = next;
   applyLocale();
   els.targetLanguage.value = settings.language.targetLanguageCode;
   els.playInterpretation.checked = settings.audio.playInterpretation;
-  els.originalVolume.value = Math.round(settings.audio.originalVolume * 100);
-  els.originalVolumeValue.textContent = `${els.originalVolume.value}%`;
-  els.interpretationVolume.value = Math.round(settings.audio.interpretationVolume * 100);
-  els.interpretationVolumeValue.textContent = `${els.interpretationVolume.value}%`;
+
+  const originalVolumePercent = unitToPercent(settings.audio.originalVolume, 75);
+  els.originalVolume.value = originalVolumePercent;
+  els.originalVolumeValue.textContent = `${originalVolumePercent}%`;
+
+  const interpretationVolumePercent = unitToPercent(settings.audio.interpretationVolume, 35);
+  els.interpretationVolume.value = interpretationVolumePercent;
+  els.interpretationVolumeValue.textContent = `${interpretationVolumePercent}%`;
+
   els.showTranslation.checked = settings.subtitles.showTranslation;
   els.showSource.checked = settings.subtitles.showSource;
   els.saveTranscript.checked = settings.privacy.saveTranscript;
@@ -194,17 +194,17 @@ function commitRangeSettingsUpdate(patch) {
 }
 
 function updateOriginalVolumeFromInput({ commit = false } = {}) {
-  const value = Number(els.originalVolume.value);
-  els.originalVolumeValue.textContent = `${value}%`;
-  const patch = { audio: { originalVolume: value / 100 } };
+  const percent = Number(els.originalVolume.value);
+  els.originalVolumeValue.textContent = `${percent}%`;
+  const patch = { audio: { originalVolume: percentToUnit(percent, settings?.audio?.originalVolume ?? 0.75) } };
   if (commit) commitRangeSettingsUpdate(patch);
   else queueRangeSettingsUpdate(patch);
 }
 
 function updateInterpretationVolumeFromInput({ commit = false } = {}) {
-  const value = Number(els.interpretationVolume.value);
-  els.interpretationVolumeValue.textContent = `${value}%`;
-  const patch = { audio: { interpretationVolume: value / 100 } };
+  const percent = Number(els.interpretationVolume.value);
+  els.interpretationVolumeValue.textContent = `${percent}%`;
+  const patch = { audio: { interpretationVolume: percentToUnit(percent, settings?.audio?.interpretationVolume ?? 0.35) } };
   if (commit) commitRangeSettingsUpdate(patch);
   else queueRangeSettingsUpdate(patch);
 }
@@ -213,7 +213,13 @@ async function start() {
   await resolveActiveTabId();
   setStatus({ ...currentSession, status: 'starting', tabId: activeTabId || currentSession?.tabId || null });
   try {
-    const response = await sendMessage({ type: MESSAGE.START_SESSION, payload: { tabId: activeTabId || undefined, source: isOtherTabSession() ? 'switch-tab' : 'popup' } });
+    const response = await sendMessage({
+      type: MESSAGE.START_SESSION,
+      payload: {
+        tabId: activeTabId || undefined,
+        source: isOtherTabSession() ? 'switch-tab' : 'popup'
+      }
+    });
     if (response?.ok) setStatus(response.session || 'capturing');
     if (!response?.ok) setStatus({ status: 'error', lastError: { message: response?.error || t(locale, 'failedToStart') } });
   } catch (error) {
@@ -231,24 +237,25 @@ async function stop() {
 }
 
 function updateStatusShortcut(status) {
-  currentPopupStatus = status || 'idle';
+  currentPopupStatus = normalizeStatus(status);
   els.status.classList.add('settings-shortcut');
   els.status.disabled = false;
   els.status.textContent = t(locale, 'openSettings');
   els.status.title = t(locale, 'openSettings');
 }
 
-function functionOpenOptions() {
+function openOptions() {
   chrome.runtime.openOptionsPage();
 }
 
 function updateButtons(status) {
-  const busy = isBusyStatus(status);
+  const normalizedStatus = normalizeStatus(status);
+  const busy = isBusyStatus(normalizedStatus);
   const otherTab = isOtherTabSession();
   const sameTabBusy = busy && !otherTab;
 
-  els.start.disabled = sameTabBusy && status !== 'error';
-  els.start.classList.toggle('busy-running', sameTabBusy && status !== 'stopping');
+  els.start.disabled = sameTabBusy && normalizedStatus !== 'error';
+  els.start.classList.toggle('busy-running', sameTabBusy && normalizedStatus !== 'stopping');
   els.start.classList.toggle('switch-target', otherTab);
 
   let label = t(locale, 'start');
@@ -256,41 +263,31 @@ function updateButtons(status) {
   if (otherTab) {
     label = t(locale, 'switchToThisTab');
     title = t(locale, 'switchToThisTabHint');
-  } else if (sameTabBusy && status !== 'stopping') {
+  } else if (sameTabBusy && normalizedStatus !== 'stopping') {
     label = t(locale, 'statusTranslating');
     title = t(locale, 'statusTranslating');
   }
 
   if (els.startLabel) els.startLabel.textContent = label;
   els.start.title = title;
-  els.stop.disabled = status === 'idle' || status === 'stopping';
+  els.stop.disabled = normalizedStatus === 'idle' || normalizedStatus === 'stopping';
 }
 
 function setStatus(value) {
   if (typeof value === 'object' && value) {
-    currentSession = { ...currentSession, ...value, status: value.status || currentSession.status || 'idle' };
-    if (value.status === 'error' && value.lastError?.message) {
+    currentSession = { ...currentSession, ...value, status: normalizeStatus(value.status || currentSession.status) };
+    if (currentSession.status === 'error' && value.lastError?.message) {
       updateStatusShortcut('error');
       els.status.title = `${t(locale, 'statusError')} · ${value.lastError.message}`;
       updateButtons('error');
       return;
     }
-    value = value.status;
+    value = currentSession.status;
   } else {
-    currentSession = { ...currentSession, status: value || 'idle' };
+    currentSession = { ...currentSession, status: normalizeStatus(value) };
   }
-  const labels = {
-    idle: t(locale, 'statusIdle'),
-    starting: t(locale, 'statusStarting'),
-    capturing: t(locale, 'statusCapturing'),
-    connecting: t(locale, 'statusConnecting'),
-    translating: t(locale, 'statusTranslating'),
-    stopping: t(locale, 'statusStopping'),
-    error: t(locale, 'statusError')
-  };
-  const status = value || 'idle';
+  const status = normalizeStatus(value);
   updateStatusShortcut(status);
-  // The header shortcut must remain a settings entry. Runtime state is represented by the start button.
   updateButtons(status);
 }
 
@@ -314,8 +311,8 @@ els.showSource.addEventListener('change', () => updateSettings({ subtitles: { sh
 els.saveTranscript.addEventListener('change', () => updateSettings({ privacy: { saveTranscript: els.saveTranscript.checked } }));
 els.start.addEventListener('click', start);
 els.stop.addEventListener('click', stop);
-if (els.openOptions) els.openOptions.addEventListener('click', functionOpenOptions);
-els.status.addEventListener('click', functionOpenOptions);
+if (els.openOptions) els.openOptions.addEventListener('click', openOptions);
+els.status.addEventListener('click', openOptions);
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === MESSAGE.SESSION_STATUS) {
