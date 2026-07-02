@@ -58,7 +58,17 @@ function sanitizeDebugValue(value) {
   return String(value);
 }
 
-async function appendDebugLog(entry = {}) {
+async function isDebugLoggingEnabled() {
+  try {
+    const settings = await getSettings();
+    return Boolean(settings?.debug?.saveLogs);
+  } catch {
+    return false;
+  }
+}
+
+async function appendDebugLog(entry = {}, { force = false } = {}) {
+  if (!force && !(await isDebugLoggingEnabled())) return;
   const safeEntry = {
     at: Date.now(),
     iso: new Date().toISOString(),
