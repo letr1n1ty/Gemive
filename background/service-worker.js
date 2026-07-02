@@ -650,7 +650,29 @@ async function startSession(request = {}) {
   if (!tab?.id) throw new Error(localized(settings, 'noTargetTab'));
 
   if (session.status !== 'idle' && session.status !== 'error') {
-    await stopSession();
+    const previousTabId = session.tabId;
+    const switchingTabs = Boolean(previousTabId && previousTabId !== tab.id);
+    debug('start.switchExistingSession', { previousTabId, nextTabId: tab.id, switchingTabs, currentStatus: session.status });
+    await stopSession({
+      keepOverlay: true,
+      reason: switchingTabs ? 'switch-tab' : 'restart-same-tab',
+      nextTabId: tab.id
+    });
+
+    if (switchingTabs) {
+      chrome.tabs.sendMessage(previousTabId, {
+        type: MESSAGE.SESSION_STATUS,
+        payload: {
+          status: 'idle',
+          tabId: previousTabId,
+          startedAt: null,
+          lastSpeechActivityAt: null,
+          lastError: null,
+          switchedAway: true,
+          switchedToTabId: tab.id
+        }
+      }).catch(() => undefined);
+    }
   }
 
   await recoverInterruptedTranscripts('new-session-started').catch((error) => {
