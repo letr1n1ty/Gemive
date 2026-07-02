@@ -16,8 +16,8 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": false,
-    "exactOptionalPropertyTypes": false,
-    "include": ["**/*.ts"],
-    "exclude": ["node_modules", "dist", "gemive.zip"]
-  }
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "dist", "build", "coverage", "gemive.zip"]
 }
