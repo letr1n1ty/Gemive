@@ -29,7 +29,9 @@ Gemive 是一款 Chrome Manifest V3 擴充功能，為目前 Chrome 分頁提供
 - 可選的僅啟動器摺疊模式，附可拖曳 Logo
 - 單一活躍翻譯工作階段，支援分頁切換
 - 逐字稿儲存至 Chrome 本地儲存空間
-- 透過 Chrome Downloads API 匯出 Markdown 逐字稿
+- 每個翻譯 session 結束時自動導出 Markdown 逐字稿
+- 長時間 session 每 10 分鐘自動導出 checkpoint Markdown
+- 透過 Chrome Downloads API 手動匯出全部 Markdown 逐字稿
 - Catppuccin Mocha 風格的深色 UI
 - 繁體中文、簡體中文與英文介面在地化
 - 支援逗號分隔的多個 Gemini API 金鑰，工作階段啟動時隨機選擇
@@ -45,7 +47,7 @@ Gemive 是一款 Chrome Manifest V3 擴充功能，為目前 Chrome 分頁提供
 → PCM16 16 kHz 音訊資料區塊
 → Gemini Live Translate
 → 字幕覆蓋層 + 同步口譯音訊播放
-→ 可選的 Markdown 逐字稿匯出
+→ 本地逐字稿儲存 + 自動 Markdown 導出
 ```
 
 擴充功能一次只保持一個活躍翻譯工作階段。如果另一個分頁正在翻譯，彈出選單會提供切換操作，而非啟動多個並行工作階段。
@@ -92,13 +94,27 @@ key_1, key_2, key_3
 
 ## 逐字稿匯出
 
-預設啟用逐字稿儲存。
+預設啟用逐字稿儲存與 session 結束自動導出。
 
-儲存的逐字稿首先儲存在 Chrome 本地儲存空間中。匯出時，Gemive 透過 Chrome Downloads API 建立 Markdown 檔案：
+儲存的逐字稿首先儲存在 Chrome 本地儲存空間中。每個翻譯 session 結束時，Gemive 會自動透過 Chrome Downloads API 建立一份 Markdown 檔案：
+
+```txt
+Downloads/Gemive/Transcripts/<date>/<timestamp>-<tab-title>-session.md
+```
+
+長時間 session 會每 10 分鐘額外導出 checkpoint 檔案，降低瀏覽器或分頁中途失敗時丟失逐字稿的風險：
+
+```txt
+Downloads/Gemive/Transcripts/<date>/<timestamp>-<tab-title>-checkpoint-001.md
+```
+
+設定頁的匯出按鈕仍保留為手動備份用途。按下後會把目前 Chrome 本地儲存空間中的所有逐字稿合併導出為一份 Markdown：
 
 ```txt
 Downloads/Gemive/Transcripts/gemive-transcripts-<timestamp>.md
 ```
+
+手動匯出不會清空本地逐字稿。清除本地逐字稿需要使用設定頁中的清除按鈕。
 
 Chrome 擴充功能無法靜默寫入任意本地檔案系統路徑，因此匯出資料夾是 Downloads 下的相對路徑。
 
@@ -166,4 +182,4 @@ docs/                   架構說明和手動測試計畫
 - 受限頁面（如 `chrome://` 頁面）無法執行內容覆蓋層。
 - 分頁音訊擷取會變更瀏覽器音訊路徑；Gemive 透過 `AudioContext` 將擷取的音訊路由回揚聲器。
 - 長時間執行的翻譯取決於分頁音訊可用性、Gemini 連線穩定性和提供者端限制。
-- 逐字稿匯出受 Chrome Downloads API 行為限制。
+- 逐字稿匯出受 Chrome Downloads API 行為限制，且只能使用 Downloads 下的相對路徑。
