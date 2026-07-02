@@ -35,7 +35,8 @@
         "<all_urls>"
       ],
       "js": [
-        "content/subtitle-overlay.js"
+        "content/subtitle-overlay.js",
+        "content/subtitle-overlay-size-patch.js"
       ],
       "run_at": "document_idle"
     }
