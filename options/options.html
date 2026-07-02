@@ -136,7 +136,8 @@
 
       <section>
         <h2 data-i18n="sectionDebug">除錯</h2>
-        <p class="hint" data-i18n="debugHint">除錯紀錄存在 Chrome 本機儲存空間的 gemive.debug.logs，API 金鑰會自動遮蔽。</p>
+        <label class="check"><input id="debugLogging" type="checkbox" /> <span>儲存除錯紀錄</span></label>
+        <p class="hint">預設關閉。啟用後才會把除錯紀錄寫入 Chrome 本機儲存空間的 gemive.debug.logs，API 金鑰會自動遮蔽。</p>
         <div class="actions-inline">
           <button id="refreshDebugLogs" data-i18n="refreshDebugLogs">重新整理除錯紀錄</button>
           <button id="copyDebugLogs" data-i18n="copyDebugLogs">複製除錯紀錄</button>
