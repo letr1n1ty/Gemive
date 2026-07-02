@@ -58,7 +58,7 @@ export async function saveSettings(settings) {
 
 export async function updateSettings(patch) {
   const current = await getSettings();
-  const next = deepMerge(current, patch);
+  const next = normalizeSettings(deepMerge(current, patch));
   await chrome.storage.local.set({ [SETTINGS_KEY]: next });
   return next;
 }
