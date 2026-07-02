@@ -26,6 +26,26 @@ function requiresGeminiReconnect(previousSettings, nextSettings) {
     || previousSettings.api?.apiKey !== nextSettings.api?.apiKey;
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseGoAwayTimeLeftMs(goAway) {
+  const value = goAway?.timeLeft || goAway?.time_left;
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, value * 1000);
+  const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)(ms|s)?$/i);
+  if (!match) return 0;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return 0;
+  return match[2]?.toLowerCase() === 'ms' ? amount : amount * 1000;
+}
+
+function renewalHandoffTimeoutMs(goAway) {
+  const timeLeftMs = parseGoAwayTimeLeftMs(goAway);
+  if (!timeLeftMs) return 4000;
+  return Math.max(1500, Math.min(8000, timeLeftMs - 2000));
+}
+
 export class AudioRouter {
   constructor() {
     this.audioContext = null;
@@ -62,7 +82,7 @@ export class AudioRouter {
     }).catch(() => undefined);
   }
 
-  createGeminiClient(settings, epoch) {
+  createGeminiClient(settings, epoch, options = {}) {
     let client = null;
     const isActiveClient = () => this.gemini === client && this.translationEpoch === epoch;
     const isWarmupClient = () => this.warmupGemini === client;
@@ -73,12 +93,18 @@ export class AudioRouter {
       targetLanguageCode: settings.language.targetLanguageCode,
       echoTargetLanguage: settings.language.echoTargetLanguage,
       onServerContent: (serverContent) => {
-        if (!isActiveClient()) return;
-        this.handleServerContent(serverContent);
+        if (isActiveClient()) {
+          this.handleServerContent(serverContent);
+          return;
+        }
+        if (isWarmupClient()) options.onWarmupServerContent?.(serverContent, client);
       },
       onAudio: (base64) => {
-        if (!isActiveClient()) return;
-        this.player?.playBase64(base64);
+        if (isActiveClient()) {
+          this.player?.playBase64(base64);
+          return;
+        }
+        if (isWarmupClient()) options.onWarmupAudio?.(base64, client);
       },
       onOpen: () => {
         this.debug(isWarmupClient() ? 'gemini.warmup.open' : 'gemini.open');
@@ -98,6 +124,16 @@ export class AudioRouter {
       onError: (error) => {
         if (isActiveClient()) this.reportError(error);
         else this.debug('gemini.nonActive.error', { message: error?.message || String(error) });
+      },
+      onGoAway: (goAway) => {
+        if (isActiveClient()) {
+          this.renewGeminiClient({ reason: 'goAway', goAway }).catch((error) => {
+            this.debug('translation.renew.unhandledFailure', { message: error?.message || String(error) });
+          });
+          return true;
+        }
+        this.debug('gemini.nonActive.goAway', goAway);
+        return false;
       },
       onDebug: (event, data) => this.debug(`gemini.${event}`, data)
     });
@@ -209,6 +245,109 @@ export class AudioRouter {
     }
 
     if (shouldReconnectGemini) await this.switchGeminiClient(settings, previousGeminiSettings);
+  }
+
+  async renewGeminiClient({ reason = 'goAway', goAway = null } = {}) {
+    const previousClient = this.gemini;
+    const settings = this.activeGeminiSettings || this.settings;
+    if (!previousClient || !settings || this.stopRequested) return;
+
+    const token = ++this.switchToken;
+    const nextEpoch = this.translationEpoch + 1;
+    if (this.warmupGemini) {
+      this.warmupGemini.close('Gemive Gemini renewal superseded');
+      this.warmupGemini = null;
+    }
+
+    const warmupServerContents = [];
+    const warmupAudioFrames = [];
+    let firstOutputSeen = false;
+    let resolveFirstOutput = null;
+    const firstOutput = new Promise((resolve) => {
+      resolveFirstOutput = resolve;
+    });
+    const markFirstOutput = (kind) => {
+      if (firstOutputSeen) return;
+      firstOutputSeen = true;
+      resolveFirstOutput?.(kind);
+    };
+
+    const nextClient = this.createGeminiClient(settings, nextEpoch, {
+      onWarmupServerContent: (serverContent) => {
+        if (token !== this.switchToken || this.warmupGemini !== nextClient || this.stopRequested) return;
+        warmupServerContents.push(serverContent);
+        if (warmupServerContents.length > 5) warmupServerContents.shift();
+        markFirstOutput('serverContent');
+      },
+      onWarmupAudio: (base64) => {
+        if (token !== this.switchToken || this.warmupGemini !== nextClient || this.stopRequested) return;
+        warmupAudioFrames.push(base64);
+        if (warmupAudioFrames.length > 12) warmupAudioFrames.shift();
+        markFirstOutput('audio');
+      }
+    });
+
+    this.warmupGemini = nextClient;
+    this.debug('translation.renew.begin', {
+      reason,
+      timeLeft: goAway?.timeLeft || goAway?.time_left || '',
+      targetLanguageCode: settings?.language?.targetLanguageCode || ''
+    });
+    this.sendStatus('translating', {
+      renewing: true,
+      targetLanguageCode: settings?.language?.targetLanguageCode || ''
+    });
+
+    try {
+      await nextClient.connect();
+      if (token !== this.switchToken || this.warmupGemini !== nextClient || this.stopRequested) {
+        nextClient.close('Gemive Gemini renewal superseded');
+        return;
+      }
+
+      const timeoutMs = renewalHandoffTimeoutMs(goAway);
+      const handoffTrigger = await Promise.race([
+        firstOutput,
+        delay(timeoutMs).then(() => 'timeout')
+      ]);
+      if (token !== this.switchToken || this.warmupGemini !== nextClient || this.stopRequested) {
+        nextClient.close('Gemive Gemini renewal superseded');
+        return;
+      }
+
+      this.translationEpoch = nextEpoch;
+      this.gemini = nextClient;
+      this.activeGeminiSettings = settings;
+      this.warmupGemini = null;
+
+      for (const serverContent of warmupServerContents) this.handleServerContent(serverContent);
+      for (const base64 of warmupAudioFrames) this.player?.playBase64(base64);
+      previousClient.close('Gemive Gemini session renewed');
+
+      this.debug('translation.renew.complete', {
+        reason,
+        handoffTrigger,
+        warmupServerContentCount: warmupServerContents.length,
+        warmupAudioFrameCount: warmupAudioFrames.length,
+        epoch: this.translationEpoch
+      });
+      this.sendStatus('translating', {
+        renewing: false,
+        targetLanguageCode: settings?.language?.targetLanguageCode || ''
+      });
+    } catch (error) {
+      if (this.warmupGemini === nextClient) this.warmupGemini = null;
+      nextClient.close('Gemive Gemini renewal failed');
+      this.debug('translation.renew.failed', {
+        reason,
+        message: error?.message || String(error)
+      });
+      this.sendStatus('translating', {
+        renewing: false,
+        renewalError: error?.message || String(error),
+        targetLanguageCode: settings?.language?.targetLanguageCode || ''
+      });
+    }
   }
 
   async switchGeminiClient(settings, previousSettings) {
