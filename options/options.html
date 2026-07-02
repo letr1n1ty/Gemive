@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <title>Gemive</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="settings-brand">
+          <img class="settings-logo" src="../assets/icon-128.png" alt="" />
+          <div>
+            <h1 data-i18n="appTitle">Gemive 設定</h1>
+            <p data-i18n="appSubtitle">設定 Gemini API、介面語言、目標語言、字幕視窗、音訊與隱私。</p>
+          </div>
+        </div>
+      </header>
+
+      <section>
+        <h2 data-i18n="sectionInterface">介面</h2>
+        <label for="uiLocale" data-i18n="uiLanguage">介面語言</label>
+        <select id="uiLocale"></select>
+      </section>
+
+      <section>
+        <h2 data-i18n="sectionApi">API</h2>
+        <div class="api-label-row">
+          <label for="apiKey" data-i18n="apiKey">Gemini API 金鑰</label>
+          <span id="apiKeyCheck" class="api-check neutral" title="尚未驗證" aria-label="尚未驗證">✓</span>
+        </div>
+        <div class="api-control-row">
+          <div class="api-input-wrap">
+            <input id="apiKey" type="password" placeholder="AIza..., AIza..., AIza..." autocomplete="off" spellcheck="false" />
+            <button id="toggleApiVisibility" class="icon-button" type="button" data-i18n-title="showApiKey" aria-label="顯示 API 金鑰">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M2.8 12s3.3-6 9.2-6 9.2 6 9.2 6-3.3 6-9.2 6-9.2-6-9.2-6Z" />
+                <circle cx="12" cy="12" r="2.8" />
+              </svg>
+            </button>
+          </div>
+          <button id="saveApiKey" class="primary api-save-button" data-i18n="saveVerify">儲存並驗證</button>
+        </div>
+        <p id="apiHint" class="hint" data-i18n="apiHintDefault">API 金鑰只會存於這個瀏覽器。可用逗號輸入多組金鑰，啟動翻譯時會隨機選用其中一組。</p>
+      </section>
+
+      <section>
+        <h2 data-i18n="sectionLanguage">語言</h2>
+        <label for="targetLanguage" data-i18n="targetLanguage">目標語言</label>
+        <select id="targetLanguage"></select>
+        <label class="check"><input id="echoTargetLanguage" type="checkbox" /> <span data-i18n="echoTargetLanguage">回播目標語言</span></label>
+        <p class="hint" data-i18n="echoHint">如果輸入語音已經是目標語言，仍然產生同語言口譯。一般建議關閉，避免背景聲或雜音被重複生成。</p>
+      </section>
+
+      <section>
+        <h2 data-i18n="sectionAudio">音訊</h2>
+        <div class="pair-row slider-pair-row">
+          <label class="control-field" for="originalVolume">
+            <span class="control-head"><span data-i18n="originalAudio">原始音訊</span><strong id="originalVolumeValue">75%</strong></span>
+            <input id="originalVolume" type="range" min="0" max="100" />
+          </label>
+          <label class="control-field" for="interpretationVolume">
+            <span class="control-head"><span data-i18n="interpretation">口譯音量</span><strong id="interpretationVolumeValue">35%</strong></span>
+            <input id="interpretationVolume" type="range" min="0" max="100" />
+          </label>
+        </div>
+        <label class="check"><input id="playInterpretation" type="checkbox" /> <span data-i18n="playInterpretationDefault">預設播放口譯</span></label>
+      </section>
+
+      <section>
+        <h2 data-i18n="sectionSubtitleWindow">字幕視窗</h2>
+        <label class="check"><input id="showSource" type="checkbox" /> <span data-i18n="showSourceSubtitle">顯示原文字幕</span></label>
+        <p class="hint" data-i18n="showSourceHint">開啟後，小視窗會上下分割：上半部顯示譯文，下半部顯示原文；關閉後譯文使用完整視窗高度。</p>
+        <label class="check"><input id="autoCollapseOverlay" type="checkbox" /> <span data-i18n="autoCollapseOverlay">自動收合為 Logo</span></label>
+        <p class="hint" data-i18n="autoCollapseOverlayHint">啟用後，左上角 X 會變成 -；點擊 - 會收合成 Logo。短按 Logo 會展開，按住拖曳可移動位置。</p>
+        <div class="settings-pairs">
+          <div class="pair-row">
+            <label class="control-field"><span data-i18n="translationFontSize">譯文字體大小</span><input id="translationFontSize" type="number" min="12" max="64" /></label>
+            <label class="control-field"><span data-i18n="sourceFontSize">原文字體大小</span><input id="sourceFontSize" type="number" min="10" max="48" /></label>
+          </div>
+          <div class="pair-row">
+            <label class="control-field"><span data-i18n="translationMaxLines">譯文滾動前最大行數</span><input id="translationMaxLines" type="number" min="1" max="16" /></label>
+            <label class="control-field"><span data-i18n="sourceMaxLines">原文滾動前最大行數</span><input id="sourceMaxLines" type="number" min="1" max="12" /></label>
+          </div>
+          <div class="pair-row color-pair-row">
+            <label class="control-field color-field"><span data-i18n="translationColor">譯文顏色</span><input id="translationColor" type="color" /></label>
+            <label class="control-field color-field"><span data-i18n="sourceColor">原文顏色</span><input id="sourceColor" type="color" /></label>
+          </div>
+          <div class="pair-row">
+            <label class="control-field"><span data-i18n="windowWidth">視窗寬度</span><input id="windowWidth" type="number" min="280" max="900" /></label>
+            <label class="control-field"><span data-i18n="windowHeight">視窗高度</span><input id="windowHeight" type="number" min="180" max="720" /></label>
+          </div>
+          <div class="pair-row slider-pair-row">
+            <label class="control-field" for="opacity">
+              <span class="control-head"><span data-i18n="windowOpacity">視窗透明度</span><strong id="opacityValue">72%</strong></span>
+              <input id="opacity" type="range" min="0" max="100" />
+            </label>
+            <label class="control-field" for="blur">
+              <span class="control-head"><span data-i18n="glassBlur">玻璃霧化</span><strong id="blurValue">22px</strong></span>
+              <input id="blur" type="range" min="0" max="48" />
+            </label>
+          </div>
+          <div class="pair-row color-pair-row">
+            <label class="control-field color-field"><span data-i18n="backgroundColor">背景顏色</span><input id="backgroundColor" type="color" /></label>
+            <label class="control-field"><span data-i18n="borderRadius">圓角</span><input id="borderRadius" type="number" min="0" max="44" /></label>
+          </div>
+        </div>
+        <p class="hint" data-i18n="subtitleHint">字幕以時間窗口累積為主，句子邊界為輔；持續說話時舊文字不會立刻消失，超過可視高度後會自動滾動。</p>
+        <div class="actions-inline">
+          <button id="resetExperience" data-i18n="restoreDefaults">恢復音訊與視覺預設值</button>
+        </div>
+      </section>
+
+      <section>
+        <h2 data-i18n="sectionPrivacy">隱私</h2>
+        <label class="check"><input id="saveTranscript" type="checkbox" /> <span data-i18n="saveTranscriptLocally">本機儲存逐字稿</span></label>
+        <p class="hint" data-i18n="privacyHint">啟用後會先存進 Chrome 本機儲存空間。Chrome 擴充功能不能直接寫入任意系統目錄；下方目錄是匯出時在「下載」資料夾內使用的相對路徑。</p>
+        <label for="transcriptFolder" data-i18n="transcriptFolder">逐字稿匯出資料夾</label>
+        <input id="transcriptFolder" type="text" data-i18n-placeholder="transcriptFolderPlaceholder" placeholder="Gemive/Transcripts" />
+        <div class="actions-inline">
+          <button id="exportTranscript" data-i18n="exportTranscripts">匯出逐字稿</button>
+          <button id="clearTranscript" data-i18n="clearTranscripts">清除本機逐字稿</button>
+        </div>
+      </section>
+
+      <section>
+        <h2 data-i18n="sectionDebug">除錯</h2>
+        <p class="hint" data-i18n="debugHint">除錯紀錄存在 Chrome 本機儲存空間的 gemive.debug.logs，API 金鑰會自動遮蔽。</p>
+        <div class="actions-inline">
+          <button id="refreshDebugLogs" data-i18n="refreshDebugLogs">重新整理除錯紀錄</button>
+          <button id="copyDebugLogs" data-i18n="copyDebugLogs">複製除錯紀錄</button>
+          <button id="clearDebugLogs" data-i18n="clearDebugLogs">清除除錯紀錄</button>
+        </div>
+        <textarea id="debugLogs" readonly rows="12" spellcheck="false"></textarea>
+      </section>
+
+      <footer>
+        <span id="saveState" data-i18n="ready">就緒</span>
+      </footer>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

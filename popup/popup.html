@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <title>Gemive</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <div class="brand-lockup" aria-label="Gemive">
+          <img class="brand-logo" src="../assets/icon-48.png" alt="" />
+          <h1>Gemive</h1>
+        </div>
+        <button id="status" class="status-pill settings-shortcut" type="button" data-i18n="openSettings">開啟設定</button>
+      </header>
+
+      <section class="actions">
+        <button id="start" class="primary"><span id="startLabel" class="button-label" data-i18n="start">開始</span></button>
+        <button id="stop" data-i18n="stop">停止</button>
+      </section>
+
+      <section class="field">
+        <label for="targetLanguage" data-i18n="targetLanguage">目標語言</label>
+        <select id="targetLanguage"></select>
+      </section>
+
+      <section class="panel important">
+        <label class="toggle-row">
+          <span>
+            <strong data-i18n="interpretationVoice">口譯聲音</strong>
+            <small data-i18n="interpretationVoiceHint">預設開啟，可隨時關閉</small>
+          </span>
+          <input id="playInterpretation" type="checkbox" />
+        </label>
+      </section>
+
+      <section class="field">
+        <label for="originalVolume"><span data-i18n="originalAudio">原始音訊</span> <span id="originalVolumeValue">75%</span></label>
+        <input id="originalVolume" type="range" min="0" max="100" step="1" />
+      </section>
+
+      <section class="field">
+        <label for="interpretationVolume"><span data-i18n="interpretation">口譯音量</span> <span id="interpretationVolumeValue">35%</span></label>
+        <input id="interpretationVolume" type="range" min="0" max="100" step="1" />
+      </section>
+
+      <section class="panel">
+        <label class="check-row"><input id="showTranslation" type="checkbox" /> <span data-i18n="translationSubtitle">譯文字幕</span></label>
+        <label class="check-row"><input id="showSource" type="checkbox" /> <span data-i18n="sourceSubtitle">原文字幕</span></label>
+        <label class="check-row"><input id="saveTranscript" type="checkbox" /> <span data-i18n="saveTranscriptLocally">本機儲存逐字稿</span></label>
+      </section>
+
+
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

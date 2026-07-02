@@ -1,0 +1,12 @@
+{
+  "name": "gemive",
+  "version": "0.1.3",
+  "private": true,
+  "type": "module",
+  "description": "Chrome MV3 extension for live translated subtitles and interpretation using Gemini Live Translate.",
+  "scripts": {
+    "check": "node scripts/check-syntax.mjs",
+    "zip": "node scripts/package-zip.mjs"
+  },
+  "devDependencies": {}
+}
