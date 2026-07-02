@@ -357,7 +357,11 @@
           user-select: text;
         }
         .toolbar {
-          position: relative;
+          position: absolute;
+          top: 6px;
+          left: 6px;
+          right: 6px;
+          z-index: 3;
           height: 26px;
           display: flex;
           align-items: center;
@@ -366,11 +370,22 @@
           padding: 2px 6px;
           cursor: grab;
           user-select: none;
-          background: rgba(17,17,27,0.54);
-          border-bottom: 1px solid rgba(205,214,244,0.16);
-          box-shadow: none;
+          background: rgba(17, 17, 27, 0.68);
+          border: 1px solid rgba(205, 214, 244, 0.16);
+          border-radius: 12px;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.36);
           backdrop-filter: blur(18px) saturate(116%);
           -webkit-backdrop-filter: blur(18px) saturate(116%);
+          opacity: 0;
+          pointer-events: none;
+          transform: translateY(-6px);
+          transition: opacity 120ms ease, transform 120ms ease;
+        }
+        .card:hover .toolbar,
+        .card.show-controls .toolbar {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0);
         }
         .controls { display: flex; align-items: center; gap: 7px; margin-left: auto; }
         .status {
@@ -427,7 +442,7 @@
           min-height: 0;
           display: flex;
           flex-direction: column;
-          padding: 8px 10px 10px;
+          padding: 12px 10px 10px;
           overflow: hidden;
           scrollbar-width: thin;
           scrollbar-color: rgba(255,255,255,0.22) transparent;
@@ -484,11 +499,19 @@
           right: 6px;
           bottom: 6px;
           cursor: nwse-resize;
-          opacity: 0.30;
+          opacity: 0;
+          pointer-events: none;
           transition: opacity 120ms ease;
           touch-action: none;
         }
-        .card:hover .resize { opacity: 0.62; }
+        .card:hover .resize,
+        .card.show-controls .resize {
+          opacity: 0.38;
+          pointer-events: auto;
+        }
+        .card:hover .resize:hover {
+          opacity: 0.8;
+        }
         .resize::after {
           content: "";
           position: absolute;
@@ -548,6 +571,8 @@
     elements.start.addEventListener('click', startTranslation);
     elements.stop.addEventListener('click', stopTranslation);
     elements.toolbar.addEventListener('pointerdown', startDrag);
+    elements.body.addEventListener('pointerdown', startDrag);
+    elements.card.addEventListener('pointerdown', handleCardPointerDown);
     elements.resize.addEventListener('pointerdown', startResize);
     document.addEventListener('fullscreenchange', moveIntoCurrentFullscreenRoot);
     window.addEventListener('resize', keepInsideViewport);
@@ -891,9 +916,42 @@
     keepInsideViewport();
   }
 
+  let touchTimer = null;
+  function handleCardPointerDown(event) {
+    if (event.pointerType !== 'touch') return;
+    
+    // 如果點擊了按鈕或 resize 等，不要 toggle，而是重設自動隱藏時間
+    if (event.target?.closest?.('button, .resize')) {
+      resetTouchTimer();
+      return;
+    }
+    
+    // 點在空白處或文字處，toggle show-controls
+    if (elements.card.classList.contains('show-controls')) {
+      elements.card.classList.remove('show-controls');
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    } else {
+      elements.card.classList.add('show-controls');
+      resetTouchTimer();
+    }
+  }
+
+  function resetTouchTimer() {
+    if (touchTimer) clearTimeout(touchTimer);
+    touchTimer = setTimeout(() => {
+      elements.card?.classList.remove('show-controls');
+      touchTimer = null;
+    }, 3000);
+  }
+
   function startDrag(event) {
     if (settings.window.lockPosition) return;
-    if (event.target?.closest?.('button, input, select, textarea')) return;
+    if (event.target?.closest?.('button, input, select, textarea, .resize')) return;
+    if (event.target?.closest?.('.translation, .source')) return; // 保留選取文字功能
+    
     event.preventDefault();
     const rect = host.getBoundingClientRect();
     dragState = {
@@ -903,27 +961,34 @@
       left: rect.left,
       top: rect.top
     };
-    elements.toolbar.setPointerCapture(event.pointerId);
-    elements.toolbar.addEventListener('pointermove', onDrag);
-    elements.toolbar.addEventListener('pointerup', stopDrag, { once: true });
-  }
-
-  function onDrag(event) {
-    if (!dragState) return;
-    const left = dragState.left + event.clientX - dragState.startX;
-    const top = dragState.top + event.clientY - dragState.startY;
-    host.style.left = `${left}px`;
-    host.style.top = `${top}px`;
-    host.style.right = 'auto';
-    host.style.bottom = 'auto';
-    keepInsideViewport();
-  }
-
-  function stopDrag() {
-    if (!dragState) return;
-    elements.toolbar.removeEventListener('pointermove', onDrag);
-    dragState = null;
-    savePosition();
+    
+    const dragTarget = event.currentTarget;
+    dragTarget.setPointerCapture(event.pointerId);
+    
+    const onDragMove = (e) => {
+      if (!dragState) return;
+      const left = dragState.left + e.clientX - dragState.startX;
+      const top = dragState.top + e.clientY - dragState.startY;
+      host.style.left = `${left}px`;
+      host.style.top = `${top}px`;
+      host.style.right = 'auto';
+      host.style.bottom = 'auto';
+      keepInsideViewport();
+    };
+    
+    const onDragUp = (e) => {
+      if (!dragState) return;
+      dragTarget.removeEventListener('pointermove', onDragMove);
+      try {
+        if (e.pointerId !== undefined) dragTarget.releasePointerCapture(e.pointerId);
+      } catch {}
+      dragState = null;
+      savePosition();
+    };
+    
+    dragTarget.addEventListener('pointermove', onDragMove);
+    dragTarget.addEventListener('pointerup', onDragUp, { once: true });
+    dragTarget.addEventListener('pointercancel', onDragUp, { once: true });
   }
 
   function startResize(event) {
