@@ -18,6 +18,14 @@ function pickRandomApiKey(value) {
   return keys[Math.floor(Math.random() * keys.length)];
 }
 
+function requiresGeminiReconnect(previousSettings, nextSettings) {
+  if (!previousSettings || !nextSettings) return false;
+  return previousSettings.language?.targetLanguageCode !== nextSettings.language?.targetLanguageCode
+    || Boolean(previousSettings.language?.echoTargetLanguage) !== Boolean(nextSettings.language?.echoTargetLanguage)
+    || previousSettings.api?.model !== nextSettings.api?.model
+    || previousSettings.api?.apiKey !== nextSettings.api?.apiKey;
+}
+
 export class AudioRouter {
   constructor() {
     this.audioContext = null;
@@ -29,10 +37,13 @@ export class AudioRouter {
     this.chunker = null;
     this.player = null;
     this.gemini = null;
+    this.warmupGemini = null;
     this.transcriptBuffer = new TranscriptBuffer();
     this.settings = null;
     this.tabId = null;
     this.stopRequested = false;
+    this.translationEpoch = 0;
+    this.switchToken = 0;
   }
 
   debug(event, data = {}) {
@@ -48,6 +59,49 @@ export class AudioRouter {
       type: MESSAGE.SESSION_STATUS,
       payload: { source: 'offscreen', status, tabId: this.tabId, ...extra }
     }).catch(() => undefined);
+  }
+
+  createGeminiClient(settings, epoch) {
+    let client = null;
+    const isActiveClient = () => this.gemini === client && this.translationEpoch === epoch;
+    const isWarmupClient = () => this.warmupGemini === client;
+
+    client = new GeminiLiveClient({
+      apiKey: pickRandomApiKey(settings.api.apiKey),
+      model: settings.api.model,
+      targetLanguageCode: settings.language.targetLanguageCode,
+      echoTargetLanguage: settings.language.echoTargetLanguage,
+      onServerContent: (serverContent) => {
+        if (!isActiveClient()) return;
+        this.handleServerContent(serverContent);
+      },
+      onAudio: (base64) => {
+        if (!isActiveClient()) return;
+        this.player?.playBase64(base64);
+      },
+      onOpen: () => {
+        this.debug(isWarmupClient() ? 'gemini.warmup.open' : 'gemini.open');
+        if (isActiveClient()) this.sendStatus('connecting');
+      },
+      onReady: () => {
+        this.debug(isWarmupClient() ? 'gemini.warmup.ready' : 'gemini.ready');
+        if (isActiveClient()) this.sendStatus('translating');
+      },
+      onClose: (event) => {
+        if (!this.stopRequested && event?.code !== 1000 && isActiveClient()) {
+          this.reportError(new Error(`Gemini connection closed (${event?.code || 'unknown'}): ${event?.reason || 'no reason'}`));
+        } else if (!this.stopRequested && event?.code !== 1000) {
+          this.debug('gemini.nonActive.close', { code: event?.code, reason: event?.reason || '' });
+        }
+      },
+      onError: (error) => {
+        if (isActiveClient()) this.reportError(error);
+        else this.debug('gemini.nonActive.error', { message: error?.message || String(error) });
+      },
+      onDebug: (event, data) => this.debug(`gemini.${event}`, data)
+    });
+
+    return client;
   }
 
   async start({ streamId, settings, tabId }) {
@@ -110,23 +164,8 @@ export class AudioRouter {
     });
     this.player.setEnabled(settings.audio.playInterpretation);
 
-    this.gemini = new GeminiLiveClient({
-      apiKey: pickRandomApiKey(settings.api.apiKey),
-      model: settings.api.model,
-      targetLanguageCode: settings.language.targetLanguageCode,
-      echoTargetLanguage: settings.language.echoTargetLanguage,
-      onServerContent: (serverContent) => this.handleServerContent(serverContent),
-      onAudio: (base64) => this.player?.playBase64(base64),
-      onOpen: () => { this.debug('gemini.open'); this.sendStatus('connecting'); },
-      onReady: () => { this.debug('gemini.ready'); this.sendStatus('translating'); },
-      onClose: (event) => {
-        if (!this.stopRequested && event?.code !== 1000) {
-          this.reportError(new Error(`Gemini connection closed (${event?.code || 'unknown'}): ${event?.reason || 'no reason'}`));
-        }
-      },
-      onError: (error) => this.reportError(error),
-      onDebug: (event, data) => this.debug(`gemini.${event}`, data)
-    });
+    this.translationEpoch += 1;
+    this.gemini = this.createGeminiClient(settings, this.translationEpoch);
 
     this.workletNode.port.onmessage = (event) => this.handleWorkletMessage(event.data);
     this.source.connect(this.workletNode);
@@ -137,8 +176,9 @@ export class AudioRouter {
   handleWorkletMessage(message) {
     if (message.type === 'AUDIO_FRAME') {
       const chunks = this.chunker.push(message.samples);
+      const clients = [this.gemini, this.warmupGemini].filter((client, index, list) => client && list.indexOf(client) === index);
       for (const chunk of chunks) {
-        this.gemini?.sendPcm16Base64(chunk.base64);
+        for (const client of clients) client.sendPcm16Base64(chunk.base64);
       }
       return;
     }
@@ -154,12 +194,77 @@ export class AudioRouter {
     }
   }
 
-  updateSettings(settings) {
+  async updateSettings(settings) {
+    const previousSettings = this.settings;
+    const shouldReconnectGemini = this.gemini && requiresGeminiReconnect(previousSettings, settings);
+
     this.settings = settings;
     if (this.originalGain) this.originalGain.gain.value = settings.audio.originalVolume;
     if (this.player) {
       this.player.setVolume(settings.audio.interpretationVolume);
       this.player.setEnabled(settings.audio.playInterpretation);
+    }
+
+    if (shouldReconnectGemini) await this.switchGeminiClient(settings, previousSettings);
+  }
+
+  async switchGeminiClient(settings, previousSettings) {
+    const previousClient = this.gemini;
+    if (!previousClient) return;
+
+    const token = ++this.switchToken;
+    const nextEpoch = this.translationEpoch + 1;
+    if (this.warmupGemini) {
+      this.warmupGemini.close('Gemive translation switch superseded');
+      this.warmupGemini = null;
+    }
+
+    const nextClient = this.createGeminiClient(settings, nextEpoch);
+    this.warmupGemini = nextClient;
+    this.debug('translation.switch.begin', {
+      fromTargetLanguageCode: previousSettings?.language?.targetLanguageCode || '',
+      toTargetLanguageCode: settings?.language?.targetLanguageCode || '',
+      modelChanged: previousSettings?.api?.model !== settings?.api?.model,
+      apiKeysChanged: previousSettings?.api?.apiKey !== settings?.api?.apiKey
+    });
+    this.sendStatus('translating', {
+      languageSwitching: true,
+      targetLanguageCode: settings?.language?.targetLanguageCode || ''
+    });
+
+    try {
+      await nextClient.connect();
+      if (token !== this.switchToken || this.warmupGemini !== nextClient || this.stopRequested) {
+        nextClient.close('Gemive translation switch superseded');
+        return;
+      }
+
+      this.translationEpoch = nextEpoch;
+      this.gemini = nextClient;
+      this.warmupGemini = null;
+      this.transcriptBuffer = new TranscriptBuffer();
+      this.player?.stop();
+      previousClient.close('Gemive translation language switched');
+      this.debug('translation.switch.complete', {
+        targetLanguageCode: settings?.language?.targetLanguageCode || '',
+        epoch: this.translationEpoch
+      });
+      this.sendStatus('translating', {
+        languageSwitching: false,
+        targetLanguageCode: settings?.language?.targetLanguageCode || ''
+      });
+    } catch (error) {
+      if (this.warmupGemini === nextClient) this.warmupGemini = null;
+      nextClient.close('Gemive translation switch failed');
+      this.debug('translation.switch.failed', {
+        targetLanguageCode: settings?.language?.targetLanguageCode || '',
+        message: error?.message || String(error)
+      });
+      this.sendStatus('translating', {
+        languageSwitching: false,
+        languageSwitchError: error?.message || String(error),
+        targetLanguageCode: previousSettings?.language?.targetLanguageCode || ''
+      });
     }
   }
 
@@ -177,8 +282,10 @@ export class AudioRouter {
 
   async stop({ requestedByUser = true, silent = false } = {}) {
     this.debug('stop.begin', { requestedByUser, silent });
+    this.switchToken += 1;
     this.stopRequested = requestedByUser || this.stopRequested;
-    if (this.gemini) this.gemini.close();
+    if (this.warmupGemini) this.warmupGemini.close('Gemive session stopped');
+    if (this.gemini) this.gemini.close('Gemive session stopped');
     if (this.player) this.player.disconnect();
     if (this.workletNode) this.workletNode.disconnect();
     if (this.monitorGain) this.monitorGain.disconnect();
@@ -200,6 +307,7 @@ export class AudioRouter {
     this.chunker = null;
     this.player = null;
     this.gemini = null;
+    this.warmupGemini = null;
     this.transcriptBuffer = new TranscriptBuffer();
     if (!silent && requestedByUser) this.sendStatus('idle');
     this.debug('stop.complete', { requestedByUser, silent });
