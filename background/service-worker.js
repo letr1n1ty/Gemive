@@ -6,15 +6,32 @@ import { resolveLocale, t } from '../core/i18n.js';
 
 const OFFSCREEN_URL = 'offscreen/offscreen.html';
 
-let session = {
-  status: 'idle',
-  tabId: null,
-  startedAt: null,
-  tabUrl: '',
-  lastSpeechActivityAt: null,
-  lastError: null
-};
+const SESSION_STATUSES = new Set(['idle', 'starting', 'capturing', 'connecting', 'translating', 'stopping', 'error']);
+const RUNNING_STATUSES = new Set(['starting', 'capturing', 'connecting', 'translating']);
 
+const SPEECH_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
+const INACTIVITY_CHECK_THROTTLE_MS = 30 * 1000;
+const NAVIGATION_RESTART_DEBOUNCE_MS = 800;
+const CAPTURE_RELEASE_POLL_MS = 120;
+
+const DEBUG_LOG_KEY = 'gemive.debug.logs';
+const DEBUG_LOG_LIMIT = 500;
+const TRANSCRIPT_UPDATE_LIMIT = 120;
+const TRANSCRIPT_URL_HISTORY_LIMIT = 20;
+
+function createIdleSession(extra = {}) {
+  return {
+    status: 'idle',
+    tabId: null,
+    startedAt: null,
+    tabUrl: '',
+    lastSpeechActivityAt: null,
+    lastError: null,
+    ...extra
+  };
+}
+
+let session = createIdleSession();
 let activeTranscriptSession = null;
 let lastTranscriptSnapshotSignature = '';
 let startInFlight = null;
@@ -24,25 +41,38 @@ let pendingNavigationRestart = null;
 let lastSpeechActivityAt = 0;
 let lastInactivityCheckAt = 0;
 
-const SPEECH_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
-const INACTIVITY_CHECK_THROTTLE_MS = 30 * 1000;
+function normalizeStatus(status) {
+  return SESSION_STATUSES.has(status) ? status : 'error';
+}
 
-const DEBUG_LOG_KEY = 'gemive.debug.logs';
-const DEBUG_LOG_LIMIT = 500;
+function normalizeTabId(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function normalizeUrl(value) {
+  return typeof value === 'string' ? value : '';
+}
 
 function sanitizeDebugValue(value) {
   if (value == null) return value;
   if (typeof value === 'string') {
-    return value.replace(/key=AIza[0-9A-Za-z_\-]+/g, 'key=[REDACTED]').replace(/AIza[0-9A-Za-z_\-]{20,}/g, '[REDACTED_API_KEY]');
+    return value
+      .replace(/key=AIza[0-9A-Za-z_\-]+/g, 'key=[REDACTED]')
+      .replace(/AIza[0-9A-Za-z_\-]{20,}/g, '[REDACTED_API_KEY]');
   }
   if (typeof value === 'number' || typeof value === 'boolean') return value;
-  if (value instanceof Error) return { name: value.name, message: sanitizeDebugValue(value.message), stack: sanitizeDebugValue(value.stack || '') };
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: sanitizeDebugValue(value.message),
+      stack: sanitizeDebugValue(value.stack || '')
+    };
+  }
   if (Array.isArray(value)) return value.map(sanitizeDebugValue).slice(0, 20);
   if (typeof value === 'object') {
     const out = {};
     for (const [key, item] of Object.entries(value).slice(0, 40)) {
-      if (/apiKey|authorization|token|password/i.test(key)) out[key] = '[REDACTED]';
-      else out[key] = sanitizeDebugValue(item);
+      out[key] = /apiKey|authorization|token|password/i.test(key) ? '[REDACTED]' : sanitizeDebugValue(item);
     }
     return out;
   }
@@ -94,27 +124,41 @@ function parseApiKeys(value) {
     .filter(Boolean);
 }
 
+function isRunningStatus(status = session.status) {
+  return RUNNING_STATUSES.has(status);
+}
+
+function updateSession(patch = {}) {
+  const nextStatus = patch.status ? normalizeStatus(patch.status) : normalizeStatus(session.status);
+  session = {
+    ...session,
+    ...patch,
+    status: nextStatus,
+    tabId: patch.tabId === undefined ? session.tabId : normalizeTabId(patch.tabId),
+    tabUrl: patch.tabUrl === undefined ? session.tabUrl : normalizeUrl(patch.tabUrl),
+    lastError: patch.lastError === undefined ? session.lastError : patch.lastError
+  };
+  return session;
+}
+
 function relayStatus() {
-  chrome.runtime.sendMessage({ type: MESSAGE.SESSION_STATUS, payload: session }).catch(() => undefined);
-  if (session.tabId) {
-    chrome.tabs.sendMessage(session.tabId, { type: MESSAGE.SESSION_STATUS, payload: session }).catch(() => undefined);
+  const snapshot = { ...session };
+  chrome.runtime.sendMessage({ type: MESSAGE.SESSION_STATUS, payload: snapshot }).catch(() => undefined);
+  if (snapshot.tabId) {
+    chrome.tabs.sendMessage(snapshot.tabId, { type: MESSAGE.SESSION_STATUS, payload: snapshot }).catch(() => undefined);
   }
 }
 
 function setStatus(status, extra = {}) {
-  session = { ...session, status, ...extra };
-  debug('session.status', { status, extra });
+  updateSession({ ...extra, status });
+  debug('session.status', { status: session.status, extra });
   relayStatus();
-}
-
-function isRunningStatus(status = session.status) {
-  return ['starting', 'capturing', 'connecting', 'translating'].includes(status);
 }
 
 function markSpeechActivity(reason = 'speech', extra = {}) {
   if (!isRunningStatus()) return;
   lastSpeechActivityAt = Date.now();
-  session = { ...session, lastSpeechActivityAt };
+  updateSession({ lastSpeechActivityAt });
   if (reason !== 'audio-level') debug('speech.activity', { reason, ...extra });
 }
 
@@ -155,6 +199,7 @@ async function closeOffscreenDocumentIfPresent() {
 }
 
 async function ensureOverlay(tabId) {
+  if (!tabId) return;
   try {
     await chrome.tabs.sendMessage(tabId, { type: MESSAGE.OVERLAY_SHOW });
   } catch {
@@ -177,12 +222,12 @@ async function sendToOffscreen(message) {
   return response;
 }
 
-
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getActiveCapture(tabId) {
+  if (!tabId) return null;
   const capturedTabs = await chrome.tabCapture.getCapturedTabs().catch(() => []);
   return capturedTabs.find((info) => {
     if (!info || info.tabId !== tabId) return false;
@@ -196,7 +241,7 @@ async function waitForCaptureRelease(tabId, timeoutMs = 1800) {
   while (Date.now() - startedAt < timeoutMs) {
     const activeCapture = await getActiveCapture(tabId);
     if (!activeCapture) return true;
-    await delay(120);
+    await delay(CAPTURE_RELEASE_POLL_MS);
   }
   return !(await getActiveCapture(tabId));
 }
@@ -217,24 +262,18 @@ async function releaseExistingCaptureIfOwned(tabId) {
   const activeCapture = await getActiveCapture(tabId);
   if (!activeCapture) return;
 
-  // First ask our offscreen audio router to stop cleanly.
   await sendToOffscreen({ type: MESSAGE.STOP_OFFSCREEN_SESSION }).catch(() => undefined);
   if (await waitForCaptureRelease(tabId, 1800)) return;
 
-  // If a previous Gemive offscreen page crashed or survived a reload, close it.
-  // Closing the offscreen document releases MediaStream tracks owned by this extension.
   await closeOffscreenDocumentIfPresent();
   if (await waitForCaptureRelease(tabId, 2600)) {
     await ensureOffscreenDocument();
-  debug('offscreen.ready');
+    debug('offscreen.ready');
     return;
   }
 
-  throw new Error(
-    localized(await getSettings().catch(() => null), 'activeCaptureStream')
-  );
+  throw new Error(localized(await getSettings().catch(() => null), 'activeCaptureStream'));
 }
-
 
 function startTranscriptRecording(settings, tab) {
   if (!settings?.privacy?.saveTranscript) {
@@ -242,6 +281,7 @@ function startTranscriptRecording(settings, tab) {
     lastTranscriptSnapshotSignature = '';
     return;
   }
+
   activeTranscriptSession = {
     id: crypto.randomUUID(),
     type: 'session',
@@ -258,8 +298,6 @@ function startTranscriptRecording(settings, tab) {
     updates: [],
     stopReason: ''
   };
-  lastTranscriptSnapshotSignature = '';
-  debug('transcript.recording.started', { tabId: tab?.id, saveTranscript: true });
 }
 
 function normalizeTranscriptText(value) {
@@ -281,12 +319,8 @@ function updateTranscriptRecording(payload) {
   activeTranscriptSession.sourceLanguageCode = payload?.source?.languageCode || activeTranscriptSession.sourceLanguageCode || '';
   activeTranscriptSession.targetLanguageCode = payload?.translation?.languageCode || activeTranscriptSession.targetLanguageCode || '';
   activeTranscriptSession.updatedAt = Date.now();
-  activeTranscriptSession.updates.push({
-    at: Date.now(),
-    translationText,
-    sourceText
-  });
-  if (activeTranscriptSession.updates.length > 120) activeTranscriptSession.updates.shift();
+  activeTranscriptSession.updates.push({ at: Date.now(), translationText, sourceText });
+  if (activeTranscriptSession.updates.length > TRANSCRIPT_UPDATE_LIMIT) activeTranscriptSession.updates.shift();
 }
 
 async function finalizeTranscriptRecording(reason = 'stop') {
@@ -313,75 +347,86 @@ function noteTranscriptUrlChange(url) {
   const history = Array.isArray(activeTranscriptSession.urlHistory) ? activeTranscriptSession.urlHistory : [];
   if (!history.length || history[history.length - 1]?.url !== url) {
     history.push({ url, at: Date.now() });
-    activeTranscriptSession.urlHistory = history.slice(-20);
+    activeTranscriptSession.urlHistory = history.slice(-TRANSCRIPT_URL_HISTORY_LIMIT);
   }
 }
 
-async function restartSessionAfterNavigation({ tabId, url, reason = 'url-change' } = {}) {
-  if (!tabId || tabId !== session.tabId || !isRunningStatus()) return session;
+function createNavigationRestart(tabId, url, reason) {
+  return {
+    tabId: normalizeTabId(tabId),
+    url: normalizeUrl(url),
+    reason: reason || 'url-change',
+    at: Date.now()
+  };
+}
+
+async function restartSessionAfterNavigation(request = {}) {
+  const restart = createNavigationRestart(request.tabId, request.url, request.reason);
+  if (!restart.tabId || restart.tabId !== session.tabId || !isRunningStatus()) return session;
+
   const settings = await getSettings();
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const tab = await chrome.tabs.get(restart.tabId).catch(() => null);
   if (!tab?.id) {
     await stopSession({ keepOverlay: true, reason: 'tab-closed' });
     return session;
   }
 
   if (!tab.active) {
-    pendingNavigationRestart = { tabId, url: tab.url || url || session.tabUrl || '', reason, at: Date.now() };
+    pendingNavigationRestart = createNavigationRestart(tab.id, tab.url || restart.url || session.tabUrl || '', restart.reason);
     debug('navigation.restart.deferred.inactive-tab', pendingNavigationRestart);
     return session;
   }
 
-  const nextUrl = tab.url || url || session.tabUrl || '';
+  const nextUrl = tab.url || restart.url || session.tabUrl || '';
   pendingNavigationRestart = null;
-  debug('navigation.restart.begin', { tabId, url: nextUrl, reason });
+  debug('navigation.restart.begin', { tabId: tab.id, url: nextUrl, reason: restart.reason });
   noteTranscriptUrlChange(nextUrl);
   setStatus('starting', {
-    tabId,
+    tabId: tab.id,
     tabUrl: nextUrl,
     startedAt: session.startedAt || Date.now(),
     lastError: null
   });
 
-  await ensureOverlay(tabId);
-  await chrome.tabs.sendMessage(tabId, { type: MESSAGE.OVERLAY_SHOW, payload: { settings } }).catch(() => undefined);
+  await ensureOverlay(tab.id);
+  await chrome.tabs.sendMessage(tab.id, { type: MESSAGE.OVERLAY_SHOW, payload: { settings } }).catch(() => undefined);
   await ensureOffscreenDocument();
   await sendToOffscreen({ type: MESSAGE.STOP_OFFSCREEN_SESSION }).catch(() => undefined);
-  await waitForCaptureRelease(tabId, 2600).catch(() => undefined);
-  await releaseExistingCaptureIfOwned(tabId);
+  await waitForCaptureRelease(tab.id, 2600).catch(() => undefined);
+  await releaseExistingCaptureIfOwned(tab.id);
 
-  const streamId = await acquireStreamId(tabId);
-  debug('navigation.streamId.acquired', { tabId, hasStreamId: Boolean(streamId) });
-  setStatus('capturing', { tabId, tabUrl: nextUrl, startedAt: session.startedAt || Date.now(), lastError: null });
+  const streamId = await acquireStreamId(tab.id);
+  debug('navigation.streamId.acquired', { tabId: tab.id, hasStreamId: Boolean(streamId) });
+  setStatus('capturing', { tabId: tab.id, tabUrl: nextUrl, startedAt: session.startedAt || Date.now(), lastError: null });
   await sendToOffscreen({
     type: MESSAGE.START_OFFSCREEN_SESSION,
-    payload: { streamId, tabId, settings }
+    payload: { streamId, tabId: tab.id, settings }
   });
-  markSpeechActivity('navigation-restarted', { tabId });
-  setStatus('translating', { tabId, tabUrl: nextUrl, startedAt: session.startedAt || Date.now(), lastError: null });
-  debug('navigation.restart.complete', { tabId, url: nextUrl });
+  markSpeechActivity('navigation-restarted', { tabId: tab.id });
+  setStatus('translating', { tabId: tab.id, tabUrl: nextUrl, startedAt: session.startedAt || Date.now(), lastError: null });
+  debug('navigation.restart.complete', { tabId: tab.id, url: nextUrl });
   return session;
 }
 
 function scheduleNavigationRestart(tabId, url, reason = 'url-change') {
   if (!tabId || tabId !== session.tabId || !isRunningStatus()) return;
-  const nextUrl = url || session.tabUrl || '';
-  if (nextUrl) session = { ...session, tabUrl: nextUrl };
-  pendingNavigationRestart = { tabId, url: nextUrl, reason, at: Date.now() };
+  const restart = createNavigationRestart(tabId, url || session.tabUrl || '', reason);
+  if (!restart.tabId) return;
+  if (restart.url) updateSession({ tabUrl: restart.url });
+  pendingNavigationRestart = restart;
   clearTimeout(navigationRestartTimer);
   navigationRestartTimer = setTimeout(() => {
-    if (!navigationRestartInFlight) {
-      navigationRestartInFlight = restartSessionAfterNavigation(pendingNavigationRestart)
-        .catch(async (error) => {
-          const gemiveError = toGemiveError(error);
-          await finalizeTranscriptRecording('navigation-restart-error').catch((saveError) => debug('transcript.recording.saveFailed', { message: saveError?.message || String(saveError) }));
-          setStatus('error', { lastError: gemiveError });
-        })
-        .finally(() => {
-          navigationRestartInFlight = null;
-        });
-    }
-  }, 800);
+    if (navigationRestartInFlight) return;
+    navigationRestartInFlight = restartSessionAfterNavigation(pendingNavigationRestart)
+      .catch(async (error) => {
+        const gemiveError = toGemiveError(error);
+        await finalizeTranscriptRecording('navigation-restart-error').catch((saveError) => debug('transcript.recording.saveFailed', { message: saveError?.message || String(saveError) }));
+        setStatus('error', { lastError: gemiveError });
+      })
+      .finally(() => {
+        navigationRestartInFlight = null;
+      });
+  }, NAVIGATION_RESTART_DEBOUNCE_MS);
   debug('navigation.restart.scheduled', pendingNavigationRestart);
 }
 
@@ -392,7 +437,8 @@ async function startSession(request = {}) {
     throw new Error(localized(settings, 'apiKeyMissing'));
   }
 
-  const tab = request.tabId ? await chrome.tabs.get(request.tabId) : await getActiveTab();
+  const targetTabId = normalizeTabId(request.tabId);
+  const tab = targetTabId ? await chrome.tabs.get(targetTabId) : await getActiveTab();
   if (!tab?.id) throw new Error(localized(settings, 'noTargetTab'));
 
   if (session.status !== 'idle' && session.status !== 'error') {
@@ -402,7 +448,8 @@ async function startSession(request = {}) {
   startTranscriptRecording(settings, tab);
   lastSpeechActivityAt = Date.now();
   lastInactivityCheckAt = 0;
-  setStatus('starting', { tabId: tab.id, startedAt: Date.now(), tabUrl: tab.url || '', lastSpeechActivityAt, lastError: null });
+  const startedAt = Date.now();
+  setStatus('starting', { tabId: tab.id, startedAt, tabUrl: tab.url || '', lastSpeechActivityAt, lastError: null });
   debug('start.targetTab', { tabId: tab.id, title: tab.title, url: tab.url });
   await ensureOverlay(tab.id);
   await chrome.tabs.sendMessage(tab.id, { type: MESSAGE.OVERLAY_SHOW, payload: { settings } });
@@ -412,19 +459,15 @@ async function startSession(request = {}) {
 
   const streamId = await acquireStreamId(tab.id);
   debug('tabCapture.streamId.acquired', { tabId: tab.id, hasStreamId: Boolean(streamId) });
-  setStatus('capturing', { tabId: tab.id, tabUrl: tab.url || '', startedAt: Date.now(), lastSpeechActivityAt, lastError: null });
+  setStatus('capturing', { tabId: tab.id, tabUrl: tab.url || '', startedAt, lastSpeechActivityAt, lastError: null });
 
   await sendToOffscreen({
     type: MESSAGE.START_OFFSCREEN_SESSION,
-    payload: {
-      streamId,
-      tabId: tab.id,
-      settings
-    }
+    payload: { streamId, tabId: tab.id, settings }
   });
 
   markSpeechActivity('session-started', { tabId: tab.id });
-  setStatus('translating', { tabId: tab.id, tabUrl: tab.url || '', startedAt: session.startedAt || Date.now(), lastSpeechActivityAt, lastError: null });
+  setStatus('translating', { tabId: tab.id, tabUrl: tab.url || '', startedAt: session.startedAt || startedAt, lastSpeechActivityAt, lastError: null });
   return session;
 }
 
@@ -444,12 +487,14 @@ async function stopSession(options = {}) {
   await finalizeTranscriptRecording(options.reason || 'stop').catch((error) => debug('transcript.recording.saveFailed', { message: error?.message || String(error) }));
   lastSpeechActivityAt = 0;
   lastInactivityCheckAt = 0;
-  setStatus('idle', { tabId: keepOverlay ? targetTabId : null, startedAt: null, lastSpeechActivityAt: null, lastError: null });
+  setStatus('idle', {
+    tabId: keepOverlay ? targetTabId : null,
+    startedAt: null,
+    tabUrl: keepOverlay ? session.tabUrl : '',
+    lastSpeechActivityAt: null,
+    lastError: null
+  });
   return session;
-}
-
-function normalizeText(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
 async function maybePersistTranscript(payload) {
@@ -457,8 +502,8 @@ async function maybePersistTranscript(payload) {
 }
 
 function handleOffscreenStatus(payload) {
-  const status = payload?.status;
-  if (!status) return;
+  const status = normalizeStatus(payload?.status);
+  if (!payload?.status) return;
   if (status === 'idle' && session.status !== 'stopping') return;
   setStatus(status, {
     tabId: payload.tabId ?? session.tabId,
@@ -467,6 +512,10 @@ function handleOffscreenStatus(payload) {
     lastSpeechActivityAt: session.lastSpeechActivityAt,
     lastError: payload.lastError ?? null
   });
+}
+
+function getMessagePayload(message) {
+  return message && typeof message === 'object' ? message.payload ?? {} : {};
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -491,7 +540,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       case MESSAGE.START_SESSION: {
-        const payload = { ...(message.payload ?? {}) };
+        const payload = { ...getMessagePayload(message) };
         if (!payload.tabId && sender?.tab?.id) payload.tabId = sender.tab.id;
         if (!startInFlight) {
           startInFlight = startSession(payload).finally(() => {
@@ -502,7 +551,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       case MESSAGE.STOP_SESSION: {
-        sendResponse({ ok: true, session: await stopSession(message.payload ?? {}) });
+        sendResponse({ ok: true, session: await stopSession(getMessagePayload(message)) });
         break;
       }
       case MESSAGE.SESSION_STATUS: {
@@ -562,11 +611,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       }
-      default:
-        {
-          const settings = await getSettings().catch(() => null);
-          sendResponse({ ok: false, error: localized(settings, 'unknownMessageType') });
-        }
+      default: {
+        const settings = await getSettings().catch(() => null);
+        sendResponse({ ok: false, error: localized(settings, 'unknownMessageType') });
+      }
     }
   })().catch((error) => {
     const gemiveError = toGemiveError(error);
