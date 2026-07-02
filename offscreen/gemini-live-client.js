@@ -1,3 +1,6 @@
+const MAX_PENDING_AUDIO_MESSAGES = 30;
+const SETUP_TIMEOUT_MS = 12000;
+
 function bytesToBase64(bytes) {
   let binary = '';
   const chunkSize = 0x8000;
@@ -10,6 +13,10 @@ function bytesToBase64(bytes) {
 function looksLikeJson(text) {
   const trimmed = String(text || '').trim();
   return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+function stringOr(value, fallback) {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
 async function websocketDataToText(data) {
@@ -37,10 +44,10 @@ function websocketDataToAudioBase64(data) {
 }
 
 export class GeminiLiveClient {
-  constructor({ apiKey, model, targetLanguageCode, echoTargetLanguage, onServerContent, onAudio, onOpen, onReady, onClose, onError, onDebug }) {
-    this.apiKey = apiKey;
-    this.model = model || 'gemini-3.5-live-translate-preview';
-    this.targetLanguageCode = targetLanguageCode || 'zh-Hant';
+  constructor({ apiKey, model, targetLanguageCode, echoTargetLanguage, onServerContent, onAudio, onOpen, onReady, onClose, onError, onDebug } = {}) {
+    this.apiKey = stringOr(apiKey, '');
+    this.model = stringOr(model, 'gemini-3.5-live-translate-preview');
+    this.targetLanguageCode = stringOr(targetLanguageCode, 'zh-Hant');
     this.echoTargetLanguage = Boolean(echoTargetLanguage);
     this.onServerContent = onServerContent;
     this.onAudio = onAudio;
@@ -59,6 +66,13 @@ export class GeminiLiveClient {
 
   connect() {
     return new Promise((resolve, reject) => {
+      if (!this.apiKey) {
+        const error = new Error('Gemini API key is missing.');
+        this.onError?.(error);
+        reject(error);
+        return;
+      }
+
       const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(this.apiKey)}`;
       this.onDebug?.('connect.begin', { model: this.model, targetLanguageCode: this.targetLanguageCode });
       const ws = new WebSocket(url);
@@ -70,6 +84,7 @@ export class GeminiLiveClient {
       const failSetup = (error) => {
         clearTimeout(this.setupTimer);
         this.setupTimer = null;
+        this.pendingAudio = [];
         if (this.connectSettled) return;
         this.connectSettled = true;
         reject(error);
@@ -90,8 +105,9 @@ export class GeminiLiveClient {
 
       ws.onopen = () => {
         this.onDebug?.('websocket.open');
-        ws.send(JSON.stringify(this.createSetupMessage()));
-        this.onDebug?.('setup.sent', this.createSetupMessage());
+        const setupMessage = this.createSetupMessage();
+        ws.send(JSON.stringify(setupMessage));
+        this.onDebug?.('setup.sent', setupMessage);
         this.onOpen?.();
         this.setupTimer = setTimeout(() => {
           if (!this.isReady) {
@@ -100,7 +116,7 @@ export class GeminiLiveClient {
             try { ws.close(4000, 'setup timeout'); } catch {}
             failSetup(error);
           }
-        }, 12000);
+        }, SETUP_TIMEOUT_MS);
       };
 
       ws.onmessage = async (event) => {
@@ -119,7 +135,6 @@ export class GeminiLiveClient {
             this.onError?.(normalized);
             failSetup(normalized);
           } else {
-            // After setup, a single malformed/non-JSON frame should not kill the session.
             this.onDebug?.('message.parseIgnored', { message: normalized.message });
           }
         }
@@ -138,6 +153,7 @@ export class GeminiLiveClient {
         this.setupTimer = null;
         const wasReady = this.isReady;
         this.isReady = false;
+        this.pendingAudio = [];
         if (!this.userClosed && !wasReady) {
           const reason = event.reason || 'no reason';
           const error = new Error(`Gemini Live closed before setup completed (${event.code || 'unknown'}): ${reason}`);
@@ -154,17 +170,11 @@ export class GeminiLiveClient {
       return JSON.parse(data);
     }
 
-    // Some Chrome/WebSocket combinations deliver Gemini JSON frames as Blob or ArrayBuffer.
-    // Convert those frames to text first instead of doing JSON.parse(Blob), which produces
-    // the misleading "[object Blob] is not valid JSON" failure.
     const text = await websocketDataToText(data);
     if (looksLikeJson(text)) {
       return JSON.parse(text);
     }
 
-    // Defensive fallback: if a future endpoint sends raw PCM as a binary frame, play it only
-    // after setup has completed. Current raw WebSocket docs describe JSON server messages,
-    // so non-JSON binary before setup remains an error.
     if (this.isReady) {
       const rawAudio = websocketDataToAudioBase64(data);
       if (rawAudio) this.onAudio?.(rawAudio);
@@ -212,8 +222,6 @@ export class GeminiLiveClient {
     if (response.goAway || response.go_away) {
       const goAway = response.goAway || response.go_away;
       this.onDebug?.('server.goAway', goAway);
-      // Gemini may send GoAway shortly before the session expires. Close promptly
-      // so the server does not abort with code 1008 because the client ignored it.
       if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
         this.userClosed = true;
         setTimeout(() => {
@@ -224,6 +232,7 @@ export class GeminiLiveClient {
   }
 
   sendPcm16Base64(base64) {
+    if (!base64 || typeof base64 !== 'string') return;
     const message = {
       realtimeInput: {
         audio: {
@@ -235,7 +244,9 @@ export class GeminiLiveClient {
 
     if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN || !this.isReady) {
       this.pendingAudio.push(message);
-      if (this.pendingAudio.length > 30) this.pendingAudio.shift();
+      if (this.pendingAudio.length > MAX_PENDING_AUDIO_MESSAGES) {
+        this.pendingAudio.splice(0, this.pendingAudio.length - MAX_PENDING_AUDIO_MESSAGES);
+      }
       return;
     }
     this.websocket.send(JSON.stringify(message));
