@@ -73,6 +73,11 @@
         <p class="hint" data-i18n="showSourceHint">開啟後，小視窗會上下分割：上半部顯示譯文，下半部顯示原文；關閉後譯文使用完整視窗高度。</p>
         <label class="check"><input id="autoCollapseOverlay" type="checkbox" /> <span data-i18n="autoCollapseOverlay">自動收合為 Logo</span></label>
         <p class="hint" data-i18n="autoCollapseOverlayHint">啟用後，左上角 X 會變成 -；點擊 - 會收合成 Logo。短按 Logo 會展開，按住拖曳可移動位置。</p>
+        <label class="check"><input id="autoShowOverlay" type="checkbox" /> <span>固定網域自動顯示字幕視窗</span></label>
+        <p class="hint">只會自動顯示字幕視窗，不會自動開始翻譯或擷取音訊。</p>
+        <label for="autoShowDomains">自動顯示網域</label>
+        <textarea id="autoShowDomains" rows="4" spellcheck="false" placeholder="youtube.com&#10;meet.google.com"></textarea>
+        <p class="hint">每行一個網域，支援主網域與子網域，例如 youtube.com 會符合 www.youtube.com。</p>
         <div class="settings-pairs">
           <div class="pair-row">
             <label class="control-field"><span data-i18n="translationFontSize">譯文字體大小</span><input id="translationFontSize" type="number" min="12" max="64" /></label>
