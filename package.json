@@ -5,8 +5,12 @@
   "type": "module",
   "description": "Chrome MV3 extension for live translated subtitles and interpretation using Gemini Live Translate.",
   "scripts": {
-    "check": "node scripts/check-syntax.mjs",
+    "check": "node scripts/check-syntax.mjs && npm run typecheck",
+    "typecheck": "tsc --noEmit",
     "zip": "node scripts/package-zip.mjs"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/chrome": "^0.0.326"
+  }
 }
