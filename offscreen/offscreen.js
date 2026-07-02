@@ -32,7 +32,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       case MESSAGE.SETTINGS_UPDATED:
         debug('settings.updated');
-        router.updateSettings(message.payload);
+        await router.updateSettings(message.payload);
         sendResponse({ ok: true });
         break;
       default:
