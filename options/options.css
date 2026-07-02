@@ -62,24 +62,24 @@ html, body { min-height: 100%; }
 
 html,
 body,
-textarea#debugLogs {
+textarea {
   scrollbar-color: var(--gemive-scrollbar-thumb) var(--gemive-scrollbar-track);
   scrollbar-width: thin;
 }
 html::-webkit-scrollbar,
 body::-webkit-scrollbar,
-textarea#debugLogs::-webkit-scrollbar {
+textarea::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 html::-webkit-scrollbar-track,
 body::-webkit-scrollbar-track,
-textarea#debugLogs::-webkit-scrollbar-track {
+textarea::-webkit-scrollbar-track {
   background: var(--gemive-scrollbar-track);
 }
 html::-webkit-scrollbar-thumb,
 body::-webkit-scrollbar-thumb,
-textarea#debugLogs::-webkit-scrollbar-thumb {
+textarea::-webkit-scrollbar-thumb {
   border: 2px solid var(--gemive-scrollbar-border);
   border-radius: 999px;
   background:
@@ -87,7 +87,7 @@ textarea#debugLogs::-webkit-scrollbar-thumb {
 }
 html::-webkit-scrollbar-thumb:hover,
 body::-webkit-scrollbar-thumb:hover,
-textarea#debugLogs::-webkit-scrollbar-thumb:hover {
+textarea::-webkit-scrollbar-thumb:hover {
   background:
     linear-gradient(180deg, var(--gemive-scrollbar-thumb-hover), rgba(203, 166, 247, 0.52));
 }
@@ -177,7 +177,8 @@ section h2 + label,
 section h2 + .check,
 section h2 + .api-row,
 section h2 + .grid,
-section h2 + .hint {
+section h2 + .hint,
+section h2 + .domain-field {
   border-top-left-radius: var(--ios-radius);
   border-top-right-radius: var(--ios-radius);
 }
@@ -188,6 +189,7 @@ section > .api-row,
 section > .grid,
 section > .actions-inline,
 section > .hint,
+section > .domain-field,
 section > textarea,
 section > input[type="text"],
 section > select {
@@ -237,7 +239,7 @@ input[type="password"],
 input[type="number"],
 input[type="text"],
 select,
-textarea#debugLogs {
+textarea {
   width: 100%;
   min-height: 38px;
   border: 1px solid rgba(180, 190, 254, 0.10);
@@ -255,6 +257,13 @@ select {
   padding: 0 11px;
 }
 
+textarea {
+  display: block;
+  padding: 11px 12px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
 select {
   appearance: auto;
   color: var(--ios-label);
@@ -269,18 +278,15 @@ input[type="password"]:focus,
 input[type="number"]:focus,
 input[type="text"]:focus,
 select:focus,
-textarea#debugLogs:focus {
+textarea:focus {
   border-color: rgba(137, 180, 250, 0.72);
   box-shadow: 0 0 0 2px var(--settings-focus-ring), inset 0 1px 0 rgba(205, 214, 244, 0.035);
 }
 
 textarea#debugLogs {
-  display: block;
   min-height: 220px;
   margin: 0;
-  padding: 12px;
   border-radius: 0;
-  resize: vertical;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: rgba(205, 214, 244, 0.86);
   background: #151522;
@@ -338,6 +344,10 @@ textarea#debugLogs {
 .check:first-of-type { border-top: 0; }
 .check input[type="checkbox"] { order: 2; }
 .check span { order: 1; }
+
+.automation-toggle {
+  min-height: 58px;
+}
 
 input[type="checkbox"] {
   appearance: none;
@@ -438,6 +448,30 @@ button.primary:hover { background: var(--ctp-lavender); }
   padding: 12px 16px;
   background: var(--ios-cell);
   border-top: 1px solid var(--ios-separator);
+}
+
+.domain-field {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px 14px;
+  background: var(--ios-cell);
+  border-top: 1px solid var(--ios-separator);
+  box-shadow: var(--settings-row-shadow);
+}
+
+.domain-field label {
+  color: var(--ios-label);
+  font-size: 16px;
+  font-weight: 520;
+  letter-spacing: -0.015em;
+}
+
+.domain-field textarea {
+  min-height: 106px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  color: rgba(205, 214, 244, 0.94);
+  background: linear-gradient(180deg, rgba(49, 50, 68, 0.82), rgba(49, 50, 68, 0.64));
 }
 
 .api-check {
