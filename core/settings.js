@@ -45,7 +45,7 @@ export const DEFAULT_SETTINGS = {
     muteOriginalWhenSpeaking: false
   },
   privacy: {
-    saveTranscript: false,
+    saveTranscript: true,
     autoExportTranscript: true,
     transcriptFolder: 'Gemive/Transcripts'
   },

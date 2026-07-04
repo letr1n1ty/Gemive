@@ -112,14 +112,14 @@
       </section>
 
       <section>
-        <h2>自動化</h2>
-        <label class="check automation-toggle"><input id="autoShowOverlay" type="checkbox" /> <span>固定網域自動顯示字幕視窗</span></label>
-        <p class="hint">只會自動顯示字幕視窗，不會自動開始翻譯或擷取音訊。</p>
+        <h2 data-i18n="sectionAutomation">自動化</h2>
+        <label class="check automation-toggle"><input id="autoShowOverlay" type="checkbox" /> <span data-i18n="autoShowOverlay">固定網域自動顯示字幕視窗</span></label>
+        <p class="hint" data-i18n="autoShowOverlayHint">只會自動顯示字幕視窗，不會自動開始翻譯或擷取音訊。</p>
         <div class="domain-field">
-          <label for="autoShowDomains">自動顯示網域</label>
+          <label for="autoShowDomains" data-i18n="autoShowDomains">自動顯示網域</label>
           <textarea id="autoShowDomains" rows="4" spellcheck="false" placeholder="youtube.com&#10;meet.google.com"></textarea>
         </div>
-        <p class="hint">每行一個網域，支援主網域與子網域，例如 youtube.com 會符合 www.youtube.com。</p>
+        <p class="hint" data-i18n="autoShowDomainsHint">每行一個網域，支援主網域與子網域，例如 youtube.com 會符合 www.youtube.com。</p>
       </section>
 
       <section>
@@ -136,8 +136,8 @@
 
       <section>
         <h2 data-i18n="sectionDebug">除錯</h2>
-        <label class="check"><input id="debugLogging" type="checkbox" /> <span>儲存除錯紀錄</span></label>
-        <p class="hint">預設關閉。啟用後才會把除錯紀錄寫入 Chrome 本機儲存空間的 gemive.debug.logs，API 金鑰會自動遮蔽。</p>
+        <label class="check"><input id="debugLogging" type="checkbox" /> <span data-i18n="debugLogging">儲存除錯紀錄</span></label>
+        <p class="hint" data-i18n="debugHint">預設關閉。啟用後才會把除錯紀錄寫入 Chrome 本機儲存空間的 gemive.debug.logs，API 金鑰會自動遮蔽。</p>
         <div class="actions-inline">
           <button id="refreshDebugLogs" data-i18n="refreshDebugLogs">重新整理除錯紀錄</button>
           <button id="copyDebugLogs" data-i18n="copyDebugLogs">複製除錯紀錄</button>
