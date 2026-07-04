@@ -74,7 +74,7 @@ Model availability depends on your Gemini API access and may change over time.
 6. Open **Gemive Settings**.
 7. Add your Gemini API key.
 8. Open a tab with audio.
-9. Click the Gemive toolbar icon and start translation.
+9. Click the Gemive toolbar icon and start translation from the popup, or press `Option+Shift+T` on macOS.
 
 ## API keys
 
@@ -94,17 +94,17 @@ At session start, Gemive chooses one available key randomly. This is useful when
 
 Transcript saving is enabled by default.
 
-Saved transcripts are stored in Chrome local storage first. When exported, Gemive creates a Markdown file through the Chrome Downloads API:
+Gemive uses a hybrid transcript storage model. Chrome local storage is the short-term cache and crash-recovery workspace; Markdown files created through the Chrome Downloads API are the long-term portable record.
 
 ```txt
-Downloads/Gemive/Transcripts/gemive-transcripts-<timestamp>.md
+Downloads/Gemive/Transcripts/YYYY-MM-DD/<timestamp>-<tab-title>-session.md
 ```
 
-Chrome extensions cannot silently write to arbitrary local file system paths, so the export folder is a relative path under Downloads.
+The local transcript cache keeps recent entries with schema and export-status metadata, and it prunes old entries that have already been exported when the cache grows too large. Chrome extensions cannot silently write to arbitrary local file system paths, so the export folder is a relative path under Downloads.
 
 ## Privacy and data flow
 
-Gemive processes audio locally until it sends encoded audio chunks to the configured Gemini Live Translate endpoint. API keys and transcripts are stored in `chrome.storage.local`.
+Gemive processes audio locally until it sends encoded audio chunks to the configured Gemini Live Translate endpoint. API keys and the recent transcript cache are stored in `chrome.storage.local`; exported transcript Markdown files are written under Downloads through the Chrome Downloads API.
 
 Debug logs are also stored locally and redact API-key-like values before persistence.
 

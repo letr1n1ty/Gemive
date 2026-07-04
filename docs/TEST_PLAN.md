@@ -21,6 +21,7 @@
 
 - Open a normal web page.
 - Click Gemive popup and Start.
+- Press `Option+Shift+T` on macOS and confirm translation can also start from the shortcut.
 - Confirm overlay appears.
 - Confirm translated subtitle is above source subtitle.
 - Drag overlay.

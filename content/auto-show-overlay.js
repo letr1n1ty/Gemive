@@ -53,8 +53,15 @@
     if (autoShowAttemptedForUrl === key) return;
 
     if (typeof window.__gemiveOverlayShow === 'function') {
+      const overlayState = typeof window.__gemiveOverlayGetState === 'function'
+        ? window.__gemiveOverlayGetState()
+        : null;
+      if (overlayState?.visible) {
+        autoShowAttemptedForUrl = key;
+        return;
+      }
       autoShowAttemptedForUrl = key;
-      window.__gemiveOverlayShow({ settings, collapse: false, source: `auto-show-domain:${reason}` });
+      window.__gemiveOverlayShow({ settings, source: `auto-show-domain:${reason}` });
       return;
     }
 

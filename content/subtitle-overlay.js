@@ -38,6 +38,8 @@
       waitingVoice: '等待語音輸入…',
       startFailedTitle: '翻譯啟動失敗',
       startFailedFallback: '啟動失敗。請查看擴充功能的 service worker console。',
+      startRequiresExtensionInvocationTitle: '需要瀏覽器授權',
+      startRequiresExtensionInvocationBody: '請點一次 Gemive 工具列圖示，並在彈出視窗裡點「開始」；或按 Option+Shift+T 直接開始。頁面內字幕按鈕無法授權首次分頁音訊擷取。',
       statusIdle: '閒置',
       statusStarting: '啟動中',
       statusCapturing: '擷取中',
@@ -64,6 +66,8 @@
       waitingVoice: '等待语音输入…',
       startFailedTitle: '翻译启动失败',
       startFailedFallback: '启动失败。请查看扩展的 service worker console。',
+      startRequiresExtensionInvocationTitle: '需要浏览器授权',
+      startRequiresExtensionInvocationBody: '请点击一次 Gemive 工具栏图标，并在弹出窗口里点击“开始”；或按 Option+Shift+T 直接开始。页面内字幕按钮无法授权首次标签页音频采集。',
       statusIdle: '空闲',
       statusStarting: '启动中',
       statusCapturing: '采集中',
@@ -90,6 +94,8 @@
       waitingVoice: 'Waiting for voice input…',
       startFailedTitle: 'Translation failed to start',
       startFailedFallback: 'Startup failed. Check the extension service worker console.',
+      startRequiresExtensionInvocationTitle: 'Browser permission required',
+      startRequiresExtensionInvocationBody: 'Click the Gemive toolbar icon, then click Start in the popup; or press Option+Shift+T to start directly. The in-page subtitle button cannot authorize first-time tab audio capture.',
       statusIdle: 'Idle',
       statusStarting: 'Starting',
       statusCapturing: 'Capturing',
@@ -151,6 +157,7 @@
   let lastSubtitleAt = 0;
   let currentStatus = 'idle';
   let collapsed = false;
+  let launcherOnlyMode = false;
   let savedExpandedRect = null;
 
   function clone(value) {
@@ -184,6 +191,12 @@
   function text(key) {
     const locale = currentLocale();
     return I18N[locale]?.[key] || I18N['zh-Hant'][key] || I18N.en[key] || key;
+  }
+
+  function isExtensionInvocationError(error) {
+    const message = String(error?.message || error || '');
+    return message.includes('Extension has not been invoked')
+      || message.includes('activeTab permission');
   }
 
   function mergeSettings(base, patch) {
@@ -624,7 +637,7 @@
     elements.source.style.maxHeight = 'none';
 
     updateStaticText();
-    if (!settings.window.autoCollapse && collapsed) expandOverlay();
+    if (!settings.window.autoCollapse && collapsed && !launcherOnlyMode) expandOverlay();
     if (!collapsed && preserveActualSize) {
       const rect = host.getBoundingClientRect();
       if (rect.width < minWidth() || rect.height < minHeight()) {
@@ -650,8 +663,9 @@
     elements.stop.setAttribute('aria-label', text('stopTranslation'));
     elements.resize.title = text('resizeWindow');
     if (elements.launcher) {
-      elements.launcher.title = text('expandSubtitleWindow');
-      elements.launcher.setAttribute('aria-label', text('expandSubtitleWindow'));
+      const launcherAction = launcherOnlyMode ? 'startTranslation' : 'expandSubtitleWindow';
+      elements.launcher.title = text(launcherAction);
+      elements.launcher.setAttribute('aria-label', text(launcherAction));
     }
     updateStatus(currentStatus);
   }
@@ -666,8 +680,9 @@
     };
   }
 
-  function collapseOverlay() {
-    if (!host || !elements.card || !elements.launcher || !settings.window.autoCollapse) return;
+  function collapseOverlay({ force = false } = {}) {
+    if (!host || !elements.card || !elements.launcher) return;
+    if (!force && !settings.window.autoCollapse) return;
     if (!collapsed) {
       const rect = host.getBoundingClientRect();
       if (rect.width > 80 && rect.height > 80) savedExpandedRect = { width: rect.width, height: rect.height };
@@ -693,6 +708,7 @@
 
   function expandOverlay() {
     if (!host || !elements.card || !elements.launcher) return;
+    launcherOnlyMode = false;
     collapsed = false;
     host.dataset.gemiveCollapsed = 'false';
     elements.launcher.hidden = true;
@@ -714,8 +730,19 @@
     if (!collapsed) expandOverlay();
   }
 
+  function showLauncherOnly() {
+    createHost();
+    visible = true;
+    launcherOnlyMode = true;
+    host.style.display = 'block';
+    moveIntoCurrentFullscreenRoot();
+    collapseOverlay({ force: true });
+    elements.launcher.title = text('startTranslation');
+    elements.launcher.setAttribute('aria-label', text('startTranslation'));
+  }
+
   function showOverlay(payload = {}) {
-    debug('overlay.show', { hasSettings: Boolean(payload.settings), collapse: Boolean(payload.collapse) });
+    debug('overlay.show', { hasSettings: Boolean(payload.settings), launcherOnly: Boolean(payload.launcherOnly) });
     createHost();
     if (payload.settings) {
       settings = mergeSettings(settings, payload.settings);
@@ -723,6 +750,11 @@
     } else {
       hydrateSettings();
     }
+    if (payload.launcherOnly) {
+      showLauncherOnly();
+      return;
+    }
+    launcherOnlyMode = false;
     visible = true;
     host.style.display = 'block';
     moveIntoCurrentFullscreenRoot();
@@ -750,6 +782,10 @@
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     event.stopPropagation();
+    if (launcherOnlyMode) {
+      startTranslation(event);
+      return;
+    }
     expandOverlay();
   }
 
@@ -793,6 +829,10 @@
     const shouldExpand = !launcherDragState.moved;
     cleanupLauncherPointer(event?.pointerId);
     if (shouldExpand) {
+      if (launcherOnlyMode) {
+        startTranslation(event);
+        return;
+      }
       expandOverlay();
       return;
     }
@@ -826,7 +866,12 @@
       const response = await sendRuntimeMessage({ type: MESSAGE.START_SESSION, payload: { source: 'overlay' } });
       debug('start.response', response);
       if (response?.ok) updateStatus(response.session || 'capturing');
-      else throw new Error(response?.error || text('startFailedFallback'));
+      else {
+        const detail = response?.detail || {};
+        const error = new Error(detail.message || response?.error || text('startFailedFallback'));
+        Object.assign(error, detail);
+        throw error;
+      }
     } catch (error) {
       debug('start.error', { message: error?.message || String(error), stack: error?.stack || '' });
       updateStatus({ status: 'error', lastError: { message: error?.message || String(error) } });
@@ -883,11 +928,16 @@
     elements.status.textContent = labelMap[value] || String(value);
     elements.start.hidden = ['starting', 'capturing', 'connecting', 'translating', 'stopping'].includes(value);
     elements.stop.hidden = !['starting', 'capturing', 'connecting', 'translating', 'stopping'].includes(value);
-    maybeAutoCollapse();
+    if (!launcherOnlyMode) maybeAutoCollapse();
     if (value === 'error') {
       const message = normalized.lastError?.message || text('startFailedFallback');
-      elements.translation.textContent = text('startFailedTitle');
-      elements.source.textContent = message;
+      const needsInvocation = isExtensionInvocationError(normalized.lastError || message);
+      elements.translation.textContent = needsInvocation
+        ? text('startRequiresExtensionInvocationTitle')
+        : text('startFailedTitle');
+      elements.source.textContent = needsInvocation
+        ? text('startRequiresExtensionInvocationBody')
+        : message;
       elements.translation.classList.add('empty');
       elements.source.classList.add('empty');
     }
@@ -1061,6 +1111,12 @@
   });
 
   window.__gemiveOverlayShow = showOverlay;
+  window.__gemiveOverlayGetState = () => ({
+    visible,
+    collapsed,
+    launcherOnly: launcherOnlyMode,
+    status: currentStatus
+  });
 
   setInterval(() => {
     if (!visible || !host || !lastSubtitleAt) return;

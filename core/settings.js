@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS = {
     autoCollapse: false
   },
   automation: {
-    autoShowOverlay: false,
+    autoShowOverlay: true,
     autoShowDomains: 'youtube.com\nmeet.google.com'
   },
   audio: {

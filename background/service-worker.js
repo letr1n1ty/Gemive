@@ -4,7 +4,8 @@ import {
   appendTranscript,
   recoverInterruptedTranscripts,
   removeTranscriptCheckpoint,
-  saveTranscriptCheckpoint
+  saveTranscriptCheckpoint,
+  updateTranscriptExport
 } from '../storage/transcript-store.js';
 import { toGemiveError } from '../core/error-types.js';
 import { resolveLocale, t } from '../core/i18n.js';
@@ -25,6 +26,7 @@ let lastTranscriptSnapshotSignature = '';
 let transcriptCheckpointTimer = null;
 let transcriptCheckpointInFlight = null;
 let startInFlight = null;
+let queuedStartRequest = null;
 let navigationRestartInFlight = null;
 let navigationRestartTimer = null;
 let pendingNavigationRestart = null;
@@ -186,6 +188,14 @@ async function ensureOverlay(tabId) {
   }
 }
 
+function showLauncherOnly(tabId, settings, reason = 'inactive-session') {
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, {
+    type: MESSAGE.OVERLAY_SHOW,
+    payload: { settings, launcherOnly: true, reason }
+  }).catch(() => undefined);
+}
+
 async function sendToOffscreen(message) {
   debug('offscreen.send', { type: message?.type });
   const response = await chrome.runtime.sendMessage({ ...message, target: 'offscreen' });
@@ -220,7 +230,15 @@ async function waitForCaptureRelease(tabId, timeoutMs = 1800) {
   return !(await getActiveCapture(tabId));
 }
 
-async function acquireStreamId(tabId) {
+async function acquireStreamId(tabId, options = {}) {
+  if (options.preferCurrentTab) {
+    try {
+      return await chrome.tabCapture.getMediaStreamId();
+    } catch (error) {
+      debug('tabCapture.currentTabFailed', { tabId, message: error?.message || String(error) });
+    }
+  }
+
   try {
     return await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
   } catch (error) {
@@ -332,7 +350,7 @@ function transcriptEntryToMarkdown(entry, { titlePrefix = 'Gemive Transcript' } 
 async function downloadMarkdownFile({ markdown, filename }) {
   if (!chrome.downloads?.download) throw new Error('Downloads API is unavailable. Reload the extension after granting the downloads permission.');
   const url = `data:text/markdown;charset=utf-8,${encodeURIComponent(markdown)}`;
-  await chrome.downloads.download({
+  return await chrome.downloads.download({
     url,
     filename,
     saveAs: false,
@@ -340,9 +358,12 @@ async function downloadMarkdownFile({ markdown, filename }) {
   });
 }
 
+function shouldAutoExportTranscriptEntry(entry) {
+  return Boolean(entry?.autoExportTranscript && (entry.sourceText || entry.translationText));
+}
+
 async function autoExportTranscriptEntry(entry, { kind = 'session' } = {}) {
-  if (!entry?.autoExportTranscript) return;
-  if (!entry.sourceText && !entry.translationText) return;
+  if (!shouldAutoExportTranscriptEntry(entry)) return null;
   const folder = sanitizeDownloadFolder(entry.transcriptFolder);
   const title = sanitizeFilenamePart(entry.tabTitle || new URL(entry.tabUrl || 'https://example.invalid').hostname, 'session');
   const stamp = timestampForFilename(new Date(entry.endedAt || Date.now()));
@@ -351,7 +372,45 @@ async function autoExportTranscriptEntry(entry, { kind = 'session' } = {}) {
   const markdown = transcriptEntryToMarkdown(entry, {
     titlePrefix: kind === 'checkpoint' ? 'Gemive Transcript Checkpoint' : 'Gemive Transcript'
   });
-  await downloadMarkdownFile({ markdown, filename });
+  const downloadId = await downloadMarkdownFile({ markdown, filename });
+  return { filename, downloadId, exportedAt: Date.now(), kind };
+}
+
+async function autoExportStoredTranscript(entry, { kind = 'session', reason = 'auto-export' } = {}) {
+  if (!shouldAutoExportTranscriptEntry(entry)) return null;
+
+  try {
+    const exported = await autoExportTranscriptEntry(entry, { kind });
+    if (exported) {
+      await updateTranscriptExport(entry.id, {
+        status: 'exported',
+        filename: exported.filename,
+        downloadId: exported.downloadId,
+        exportedAt: exported.exportedAt,
+        errorMessage: ''
+      }).catch((error) => debug('transcript.autoExport.markFailed', { message: error?.message || String(error), id: entry.id }));
+    }
+    debug('transcript.autoExport.saved', {
+      reason,
+      kind,
+      durationMs: entry.durationMs,
+      filename: exported?.filename || ''
+    });
+    return exported;
+  } catch (error) {
+    await updateTranscriptExport(entry.id, {
+      status: 'failed',
+      errorMessage: error?.message || String(error)
+    }).catch((markError) => debug('transcript.autoExport.markFailed', { message: markError?.message || String(markError), id: entry.id }));
+    debug('transcript.autoExport.failed', { reason, kind, message: error?.message || String(error) });
+    return null;
+  }
+}
+
+async function autoExportRecoveredTranscripts(entries = [], reason = 'recovered') {
+  for (const entry of entries) {
+    await autoExportStoredTranscript(entry, { kind: 'session', reason });
+  }
 }
 
 function normalizeTranscriptText(value) {
@@ -539,7 +598,7 @@ async function finalizeTranscriptRecording(reason = 'stop') {
   await saveTranscriptCheckpoint(current).catch((error) => {
     debug('transcript.recording.finalCheckpointFailed', { message: error?.message || String(error), reason });
   });
-  await appendTranscript(current);
+  const saved = await appendTranscript(current);
   await removeTranscriptCheckpoint(current.id).catch((error) => {
     debug('transcript.recording.checkpointCleanupFailed', { message: error?.message || String(error), id: current.id });
   });
@@ -550,12 +609,7 @@ async function finalizeTranscriptRecording(reason = 'stop') {
     hasTranslation: Boolean(current.translationText)
   });
 
-  try {
-    await autoExportTranscriptEntry(current, { kind: 'session' });
-    debug('transcript.autoExport.saved', { reason, durationMs: current.durationMs });
-  } catch (error) {
-    debug('transcript.autoExport.failed', { message: error?.message || String(error) });
-  }
+  await autoExportStoredTranscript(saved, { kind: 'session', reason });
 }
 
 function noteTranscriptUrlChange(url) {
@@ -653,6 +707,7 @@ async function startSession(request = {}) {
     const previousTabId = session.tabId;
     const switchingTabs = Boolean(previousTabId && previousTabId !== tab.id);
     debug('start.switchExistingSession', { previousTabId, nextTabId: tab.id, switchingTabs, currentStatus: session.status });
+    if (switchingTabs) showLauncherOnly(previousTabId, settings, 'switching-away');
     await stopSession({
       keepOverlay: true,
       reason: switchingTabs ? 'switch-tab' : 'restart-same-tab',
@@ -675,8 +730,12 @@ async function startSession(request = {}) {
     }
   }
 
-  await recoverInterruptedTranscripts('new-session-started').catch((error) => {
+  const recoveredTranscripts = await recoverInterruptedTranscripts('new-session-started').catch((error) => {
     debug('transcript.recording.recoveryFailed', { message: error?.message || String(error) });
+    return [];
+  });
+  autoExportRecoveredTranscripts(recoveredTranscripts, 'new-session-started').catch((error) => {
+    debug('transcript.recovered.autoExportFailed', { message: error?.message || String(error) });
   });
   await startTranscriptRecording(settings, tab);
   lastSpeechActivityAt = Date.now();
@@ -689,7 +748,9 @@ async function startSession(request = {}) {
   debug('offscreen.ready');
   await releaseExistingCaptureIfOwned(tab.id);
 
-  const streamId = await acquireStreamId(tab.id);
+  const streamId = await acquireStreamId(tab.id, {
+    preferCurrentTab: request.source === 'overlay' && tab.active
+  });
   debug('tabCapture.streamId.acquired', { tabId: tab.id, hasStreamId: Boolean(streamId) });
   setStatus('capturing', { tabId: tab.id, tabUrl: tab.url || '', startedAt: Date.now(), lastSpeechActivityAt, lastError: null });
 
@@ -705,6 +766,49 @@ async function startSession(request = {}) {
   markSpeechActivity('session-started', { tabId: tab.id });
   setStatus('translating', { tabId: tab.id, tabUrl: tab.url || '', startedAt: session.startedAt || Date.now(), lastSpeechActivityAt, lastError: null });
   return session;
+}
+
+async function drainStartRequests() {
+  let result = session;
+  while (queuedStartRequest) {
+    const request = queuedStartRequest;
+    queuedStartRequest = null;
+    try {
+      result = await startSession(request);
+    } catch (error) {
+      if (!queuedStartRequest) throw error;
+      debug('start.supersededFailure', { message: error?.message || String(error) });
+    }
+  }
+  return result;
+}
+
+async function queueStartSession(payload = {}) {
+  queuedStartRequest = payload;
+  if (!startInFlight) {
+    startInFlight = drainStartRequests().finally(() => {
+      startInFlight = null;
+    });
+  }
+  return await startInFlight;
+}
+
+async function startFromShortcutCommand(tab) {
+  const targetTab = tab?.id ? tab : await getActiveTab();
+  try {
+    return await queueStartSession({ tabId: targetTab.id, source: 'shortcut' });
+  } catch (error) {
+    const gemiveError = toGemiveError(error);
+    await appendDebugLog({ area: 'background', event: 'command.startFailed', data: gemiveError, tabId: targetTab?.id });
+    await finalizeTranscriptRecording('error').catch((saveError) => debug('transcript.recording.saveFailed', { message: saveError?.message || String(saveError) }));
+    if (targetTab?.id) await ensureOverlay(targetTab.id).catch(() => undefined);
+    setStatus('error', {
+      tabId: targetTab?.id ?? session.tabId,
+      tabUrl: targetTab?.url || session.tabUrl,
+      lastError: gemiveError
+    });
+    return session;
+  }
 }
 
 async function stopSession(options = {}) {
@@ -769,12 +873,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case MESSAGE.START_SESSION: {
         const payload = { ...(message.payload ?? {}) };
         if (!payload.tabId && sender?.tab?.id) payload.tabId = sender.tab.id;
-        if (!startInFlight) {
-          startInFlight = startSession(payload).finally(() => {
-            startInFlight = null;
-          });
-        }
-        sendResponse({ ok: true, session: await startInFlight });
+        sendResponse({ ok: true, session: await queueStartSession(payload) });
         break;
       }
       case MESSAGE.STOP_SESSION: {
@@ -848,10 +947,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const gemiveError = toGemiveError(error);
     appendDebugLog({ area: 'background', event: 'handler.error', data: gemiveError, tabId: sender?.tab?.id }).catch(() => undefined);
     finalizeTranscriptRecording('error').catch((saveError) => debug('transcript.recording.saveFailed', { message: saveError?.message || String(saveError) }));
-    setStatus('error', { lastError: gemiveError });
+    setStatus('error', {
+      tabId: sender?.tab?.id ?? session.tabId,
+      tabUrl: sender?.tab?.url || session.tabUrl,
+      lastError: gemiveError
+    });
     sendResponse({ ok: false, error: gemiveError.message, detail: gemiveError });
   });
   return true;
+});
+
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command !== 'start-translation') return;
+  startFromShortcutCommand(tab).catch((error) => {
+    debug('command.startUnhandledFailure', { message: error?.message || String(error) });
+  });
 });
 
 chrome.tabCapture.onStatusChanged.addListener((info) => {

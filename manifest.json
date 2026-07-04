@@ -20,8 +20,8 @@
     "type": "module"
   },
   "action": {
-    "default_popup": "popup/popup.html",
     "default_title": "Gemive",
+    "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "assets/icon-16.png",
       "32": "assets/icon-32.png",
@@ -29,6 +29,14 @@
     }
   },
   "options_page": "options/options.html",
+  "commands": {
+    "start-translation": {
+      "suggested_key": {
+        "default": "Alt+Shift+T"
+      },
+      "description": "Start or switch Gemive translation"
+    }
+  },
   "content_scripts": [
     {
       "matches": [
