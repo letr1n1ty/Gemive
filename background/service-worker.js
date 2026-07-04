@@ -9,6 +9,14 @@ import {
 } from '../storage/transcript-store.js';
 import { toGemiveError } from '../core/error-types.js';
 import { resolveLocale, t } from '../core/i18n.js';
+import { parseApiKeys } from '../core/api-keys.js';
+import {
+  buildTranscriptEntryFilename,
+  downloadMarkdownFile,
+  formatTranscriptEntryMarkdown,
+  sanitizeDownloadFolder,
+  shouldAutoExportTranscriptEntry
+} from '../core/transcript-export.js';
 
 const OFFSCREEN_URL = 'offscreen/offscreen.html';
 
@@ -106,14 +114,6 @@ function debug(event, data = {}) {
 
 function localized(settings, key) {
   return t(resolveLocale(settings), key);
-}
-
-// Check if settings has API Key
-function parseApiKeys(value) {
-  return String(value || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function relayStatus() {
@@ -272,104 +272,10 @@ async function releaseExistingCaptureIfOwned(tabId) {
   );
 }
 
-function sanitizeDownloadFolder(value) {
-  const cleaned = String(value || '')
-    .replace(/\\/g, '/')
-    .split('/')
-    .map((part) => part.trim().replace(/[<>:"|?*\u0000-\u001F]/g, '-'))
-    .filter((part) => part && part !== '.' && part !== '..')
-    .join('/');
-  return cleaned || 'Gemive/Transcripts';
-}
-
-function sanitizeFilenamePart(value, fallback = 'session') {
-  const cleaned = String(value || '')
-    .normalize('NFKC')
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80)
-    .replace(/[. ]+$/g, '');
-  return cleaned || fallback;
-}
-
-function timestampForFilename(date = new Date()) {
-  return date.toISOString().replace(/[:.]/g, '-');
-}
-
-function dateFolder(value = Date.now()) {
-  return new Date(value).toISOString().slice(0, 10);
-}
-
-function formatIso(value) {
-  if (!value) return '';
-  try { return new Date(value).toISOString(); } catch { return String(value); }
-}
-
-function formatDuration(ms) {
-  const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
-}
-
-function mdText(value) {
-  return String(value || '').trim() || '_No content captured._';
-}
-
-function transcriptEntryToMarkdown(entry, { titlePrefix = 'Gemive Transcript' } = {}) {
-  const lines = [
-    `# ${titlePrefix}`,
-    '',
-    `Exported: ${new Date().toISOString()}`,
-    ''
-  ];
-
-  const startedAt = formatIso(entry.startedAt || entry.receivedAt || entry.createdAt);
-  const endedAt = formatIso(entry.endedAt);
-  if (entry.tabTitle) lines.push(`- Title: ${entry.tabTitle}`);
-  if (startedAt) lines.push(`- Started: ${startedAt}`);
-  if (endedAt) lines.push(`- Stopped: ${endedAt}`);
-  if (entry.durationMs !== undefined) lines.push(`- Duration: ${formatDuration(entry.durationMs)}`);
-  if (entry.tabUrl) lines.push(`- URL: ${entry.tabUrl}`);
-  if (Array.isArray(entry.urlHistory) && entry.urlHistory.length > 1) {
-    lines.push('- URL history:');
-    entry.urlHistory.forEach((item) => {
-      lines.push(`  - ${formatIso(item.at)} ${item.url}`);
-    });
-  }
-  if (entry.sourceLanguageCode) lines.push(`- Source language: ${entry.sourceLanguageCode}`);
-  if (entry.targetLanguageCode) lines.push(`- Target language: ${entry.targetLanguageCode}`);
-  if (entry.stopReason) lines.push(`- Stop reason: ${entry.stopReason}`);
-  if (entry.checkpointIndex) lines.push(`- Checkpoint: ${entry.checkpointIndex}`);
-
-  lines.push('', '## Translation', '', mdText(entry.translationText), '', '## Source', '', mdText(entry.sourceText), '');
-  return lines.join('\n');
-}
-
-async function downloadMarkdownFile({ markdown, filename }) {
-  if (!chrome.downloads?.download) throw new Error('Downloads API is unavailable. Reload the extension after granting the downloads permission.');
-  const url = `data:text/markdown;charset=utf-8,${encodeURIComponent(markdown)}`;
-  return await chrome.downloads.download({
-    url,
-    filename,
-    saveAs: false,
-    conflictAction: 'uniquify'
-  });
-}
-
-function shouldAutoExportTranscriptEntry(entry) {
-  return Boolean(entry?.autoExportTranscript && (entry.sourceText || entry.translationText));
-}
-
 async function autoExportTranscriptEntry(entry, { kind = 'session' } = {}) {
   if (!shouldAutoExportTranscriptEntry(entry)) return null;
-  const folder = sanitizeDownloadFolder(entry.transcriptFolder);
-  const title = sanitizeFilenamePart(entry.tabTitle || new URL(entry.tabUrl || 'https://example.invalid').hostname, 'session');
-  const stamp = timestampForFilename(new Date(entry.endedAt || Date.now()));
-  const suffix = kind === 'checkpoint' ? `checkpoint-${String(entry.checkpointIndex || 1).padStart(3, '0')}` : 'session';
-  const filename = `${folder}/${dateFolder(entry.startedAt || Date.now())}/${stamp}-${title}-${suffix}.md`;
-  const markdown = transcriptEntryToMarkdown(entry, {
+  const filename = buildTranscriptEntryFilename(entry, { kind });
+  const markdown = formatTranscriptEntryMarkdown(entry, {
     titlePrefix: kind === 'checkpoint' ? 'Gemive Transcript Checkpoint' : 'Gemive Transcript'
   });
   const downloadId = await downloadMarkdownFile({ markdown, filename });

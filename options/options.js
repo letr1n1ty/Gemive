@@ -1,13 +1,20 @@
-import { SUPPORTED_LANGUAGES, formatLanguageLabel } from '../core/language-registry.js';
 import { DEFAULT_SETTINGS } from '../core/settings.js';
 import { MESSAGE } from '../core/message-types.js';
 import { clearTranscripts, getTranscripts } from '../storage/transcript-store.js';
 import { UI_LOCALES, formatUiLocaleLabel, localizeDocument, resolveLocale, t } from '../core/i18n.js';
+import { parseApiKeys } from '../core/api-keys.js';
+import { renderLanguageSelect } from '../core/language-select.js';
+import {
+  buildTranscriptArchiveFilename,
+  downloadMarkdownFile,
+  formatTranscriptArchiveMarkdown,
+  sanitizeDownloadFolder
+} from '../core/transcript-export.js';
 
 const ids = [
   'uiLocale', 'apiKey', 'toggleApiVisibility', 'saveApiKey', 'apiKeyCheck', 'apiHint', 'targetLanguage', 'echoTargetLanguage',
   'originalVolume', 'originalVolumeValue', 'interpretationVolume', 'interpretationVolumeValue',
-  'playInterpretation', 'showSource', 'autoCollapseOverlay', 'autoShowOverlay', 'autoShowDomains', 'translationFontSize', 'sourceFontSize', 'translationMaxLines', 'sourceMaxLines',
+  'playInterpretation', 'showSource', 'autoCollapseOverlay', 'autoShowOverlay', 'autoShowDomains', 'autoShowDomainInput', 'addAutoShowDomain', 'autoShowDomainChips', 'translationFontSize', 'sourceFontSize', 'translationMaxLines', 'sourceMaxLines',
   'translationColor', 'sourceColor', 'windowWidth', 'windowHeight', 'backgroundColor', 'opacity', 'opacityValue',
   'blur', 'blurValue', 'borderRadius', 'saveTranscript', 'transcriptFolder', 'exportTranscript', 'clearTranscript', 'resetExperience',
   'debugLogging', 'refreshDebugLogs', 'copyDebugLogs', 'clearDebugLogs', 'debugLogs', 'saveState'
@@ -59,13 +66,6 @@ function setApiValidationState(state, message = '') {
   if (message) els.apiHint.textContent = message;
 }
 
-function parseApiKeys(value) {
-  return String(value || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function describeApiKeyCount(count) {
   if (count <= 1) return '';
   return t(locale, 'apiMultipleCount', { count });
@@ -111,16 +111,6 @@ async function validateApiKey(apiKeyText) {
   };
 }
 
-function sanitizeDownloadFolder(value) {
-  const cleaned = String(value || '')
-    .replace(/\\/g, '/')
-    .split('/')
-    .map((part) => part.trim().replace(/[<>:"|?*\u0000-\u001F]/g, '-'))
-    .filter((part) => part && part !== '.' && part !== '..')
-    .join('/');
-  return cleaned || 'Gemive/Transcripts';
-}
-
 function normalizeDomain(value) {
   return String(value || '')
     .trim()
@@ -131,66 +121,101 @@ function normalizeDomain(value) {
     .toLowerCase();
 }
 
+function normalizeUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const url = new URL(withProtocol);
+    url.hash = '';
+    if ((url.pathname && url.pathname !== '/') || url.search) {
+      return `${url.origin}${url.pathname}${url.search}`;
+    }
+    return normalizeDomain(url.hostname);
+  } catch {
+    return '';
+  }
+}
+
+function normalizeAutoShowRule(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw) || /^[^/\s]+\.[^/\s]+\/.+/.test(raw)) {
+    return normalizeUrl(raw);
+  }
+  return normalizeDomain(raw);
+}
+
 function sanitizeAutoShowDomains(value) {
   const items = String(value || '')
     .split(/[\n,]+/)
-    .map(normalizeDomain)
+    .map(normalizeAutoShowRule)
     .filter(Boolean)
-    .filter((domain) => domain !== '*' && domain !== '.');
+    .filter((rule) => rule !== '*' && rule !== '.');
   return [...new Set(items)].join('\n');
 }
 
-function timestampForFilename(date = new Date()) {
-  return date.toISOString().replace(/[:.]/g, '-');
+function parseAutoShowDomains(value) {
+  const normalized = sanitizeAutoShowDomains(value);
+  return normalized ? normalized.split('\n') : [];
 }
 
-function formatIso(value) {
-  if (!value) return '';
-  try { return new Date(value).toISOString(); } catch { return String(value); }
+function setAutoShowDomainsValue(domains) {
+  const normalized = sanitizeAutoShowDomains(domains.join('\n'));
+  els.autoShowDomains.value = normalized;
+  return normalized;
 }
 
-function formatDuration(ms) {
-  const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
-}
+function renderAutoShowDomains(value) {
+  const domains = parseAutoShowDomains(value);
+  setAutoShowDomainsValue(domains);
+  els.autoShowDomainChips.innerHTML = '';
 
-function mdText(value) {
-  return String(value || '').trim() || '_No content captured._';
-}
-
-function transcriptToMarkdown(transcripts) {
-  const exportedAt = new Date().toISOString();
-  const lines = [
-    '# Gemive Transcripts',
-    '',
-    `Exported: ${exportedAt}`,
-    `Count: ${transcripts.length}`,
-    ''
-  ];
-
-  if (!transcripts.length) {
-    lines.push('_No transcripts saved yet._', '');
-    return lines.join('\n');
+  if (!domains.length) {
+    const empty = document.createElement('div');
+    empty.className = 'domain-chip-empty';
+    empty.textContent = t(locale, 'autoShowDomainEmpty');
+    els.autoShowDomainChips.appendChild(empty);
+    return;
   }
 
-  transcripts.forEach((entry, index) => {
-    const title = entry.tabTitle || 'Untitled tab';
-    const startedAt = formatIso(entry.startedAt || entry.receivedAt || entry.createdAt);
-    const endedAt = formatIso(entry.endedAt);
-    lines.push('---', '', `## ${index + 1}. ${title}`, '');
-    if (startedAt) lines.push(`- Started: ${startedAt}`);
-    if (endedAt) lines.push(`- Stopped: ${endedAt}`);
-    if (entry.durationMs !== undefined) lines.push(`- Duration: ${formatDuration(entry.durationMs)}`);
-    if (entry.tabUrl) lines.push(`- URL: ${entry.tabUrl}`);
-    if (entry.sourceLanguageCode) lines.push(`- Source language: ${entry.sourceLanguageCode}`);
-    if (entry.targetLanguageCode) lines.push(`- Target language: ${entry.targetLanguageCode}`);
-    if (entry.stopReason) lines.push(`- Stop reason: ${entry.stopReason}`);
-    lines.push('', '### Translation', '', mdText(entry.translationText), '', '### Source', '', mdText(entry.sourceText), '');
-  });
+  for (const domain of domains) {
+    const chip = document.createElement('span');
+    chip.className = 'domain-chip';
 
-  return lines.join('\n');
+    const text = document.createElement('span');
+    text.textContent = domain;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.title = t(locale, 'removeAutoShowDomain', { domain });
+    remove.setAttribute('aria-label', t(locale, 'removeAutoShowDomain', { domain }));
+    remove.addEventListener('click', () => removeAutoShowDomain(domain));
+
+    chip.append(text, remove);
+    els.autoShowDomainChips.appendChild(chip);
+  }
+}
+
+async function persistAutoShowDomains(domains) {
+  const normalized = setAutoShowDomainsValue(domains);
+  renderAutoShowDomains(normalized);
+  await updateSettings({ automation: { autoShowDomains: normalized } }, true, { rerender: false });
+}
+
+async function addAutoShowDomains(rawValue = els.autoShowDomainInput.value) {
+  const incoming = parseAutoShowDomains(rawValue);
+  if (!incoming.length) return;
+  const current = parseAutoShowDomains(els.autoShowDomains.value);
+  await persistAutoShowDomains([...current, ...incoming]);
+  els.autoShowDomainInput.value = '';
+  els.autoShowDomainInput.focus();
+}
+
+async function removeAutoShowDomain(domain) {
+  const current = parseAutoShowDomains(els.autoShowDomains.value);
+  await persistAutoShowDomains(current.filter((item) => item !== domain));
 }
 
 async function exportTranscripts() {
@@ -201,21 +226,11 @@ async function exportTranscripts() {
     const transcripts = await getTranscripts();
     const folder = sanitizeDownloadFolder(els.transcriptFolder.value || settings?.privacy?.transcriptFolder);
     await updateSettings({ privacy: { transcriptFolder: folder } }, true, { rerender: false });
-    const payload = transcriptToMarkdown(transcripts);
-    const blob = new Blob([payload], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    try {
-      if (!chrome.downloads?.download) throw new Error('Downloads API is unavailable. Reload the extension after granting the downloads permission.');
-      await chrome.downloads.download({
-        url,
-        filename: `${folder}/gemive-transcripts-${timestampForFilename()}.md`,
-        saveAs: false,
-        conflictAction: 'uniquify'
-      });
-      els.saveState.textContent = t(locale, 'exportedTo', { folder });
-    } finally {
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
+    await downloadMarkdownFile({
+      markdown: formatTranscriptArchiveMarkdown(transcripts),
+      filename: buildTranscriptArchiveFilename(folder)
+    });
+    els.saveState.textContent = t(locale, 'exportedTo', { folder });
   } catch (error) {
     els.saveState.textContent = t(locale, 'exportFailed', { message: error?.message || String(error) });
   } finally {
@@ -225,19 +240,10 @@ async function exportTranscripts() {
 }
 
 function renderLanguages() {
-  if (!els.targetLanguage) return;
-  const previous = els.targetLanguage.value || settings?.language?.targetLanguageCode;
-  const popular = SUPPORTED_LANGUAGES.filter((language) => language.popular);
-  const others = SUPPORTED_LANGUAGES.filter((language) => !language.popular);
-  els.targetLanguage.innerHTML = '';
-  const popularGroup = document.createElement('optgroup');
-  popularGroup.label = t(locale, 'popularLanguages');
-  for (const language of popular) popularGroup.appendChild(new Option(formatLanguageLabel(language), language.code));
-  const allGroup = document.createElement('optgroup');
-  allGroup.label = t(locale, 'allLanguages');
-  for (const language of others) allGroup.appendChild(new Option(formatLanguageLabel(language), language.code));
-  els.targetLanguage.append(popularGroup, allGroup);
-  if (previous) els.targetLanguage.value = previous;
+  renderLanguageSelect(els.targetLanguage, {
+    locale,
+    selectedValue: els.targetLanguage?.value || settings?.language?.targetLanguageCode
+  });
 }
 
 function renderSettings(next) {
@@ -257,7 +263,7 @@ function renderSettings(next) {
   els.showSource.checked = settings.subtitles.showSource;
   els.autoCollapseOverlay.checked = Boolean(settings.window.autoCollapse);
   els.autoShowOverlay.checked = Boolean(settings.automation?.autoShowOverlay);
-  els.autoShowDomains.value = sanitizeAutoShowDomains(settings.automation?.autoShowDomains || '');
+  renderAutoShowDomains(settings.automation?.autoShowDomains || '');
   els.translationFontSize.value = settings.subtitles.translationFontSize;
   els.sourceFontSize.value = settings.subtitles.sourceFontSize;
   els.translationMaxLines.value = settings.subtitles.translationMaxLines ?? 6;
@@ -340,7 +346,17 @@ function bind() {
   els.showSource.addEventListener('change', () => updateSettings({ subtitles: { showSource: els.showSource.checked } }, true));
   els.autoCollapseOverlay.addEventListener('change', () => updateSettings({ window: { autoCollapse: els.autoCollapseOverlay.checked } }, true));
   els.autoShowOverlay.addEventListener('change', () => updateSettings({ automation: { autoShowOverlay: els.autoShowOverlay.checked } }, true));
-  els.autoShowDomains.addEventListener('change', () => updateSettings({ automation: { autoShowDomains: sanitizeAutoShowDomains(els.autoShowDomains.value) } }, true));
+  els.addAutoShowDomain.addEventListener('click', () => addAutoShowDomains());
+  els.autoShowDomainInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ',') return;
+    event.preventDefault();
+    addAutoShowDomains();
+  });
+  els.autoShowDomainInput.addEventListener('paste', () => {
+    setTimeout(() => {
+      if (/[\n,]/.test(els.autoShowDomainInput.value)) addAutoShowDomains();
+    }, 0);
+  });
   els.translationFontSize.addEventListener('input', () => updateSettings({ subtitles: { translationFontSize: Number(els.translationFontSize.value) } }, false, { rerender: false }));
   els.sourceFontSize.addEventListener('input', () => updateSettings({ subtitles: { sourceFontSize: Number(els.sourceFontSize.value) } }, false, { rerender: false }));
   els.translationMaxLines.addEventListener('input', () => updateSettings({ subtitles: { translationMaxLines: Number(els.translationMaxLines.value) } }, false, { rerender: false }));

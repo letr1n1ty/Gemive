@@ -4,19 +4,7 @@ import { Pcm16Chunker } from './pcm16-encoder.js';
 import { Pcm16Player } from './pcm16-player.js';
 import { GeminiLiveClient } from './gemini-live-client.js';
 import { resolveLocale, t } from '../core/i18n.js';
-
-function parseApiKeys(value) {
-  return String(value || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function pickRandomApiKey(value) {
-  const keys = parseApiKeys(value);
-  if (!keys.length) return '';
-  return keys[Math.floor(Math.random() * keys.length)];
-}
+import { parseApiKeys, pickRandomApiKey } from '../core/api-keys.js';
 
 function requiresGeminiReconnect(previousSettings, nextSettings) {
   if (!previousSettings || !nextSettings) return false;

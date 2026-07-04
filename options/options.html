@@ -116,10 +116,17 @@
         <label class="check automation-toggle"><input id="autoShowOverlay" type="checkbox" /> <span data-i18n="autoShowOverlay">固定網域自動顯示字幕視窗</span></label>
         <p class="hint" data-i18n="autoShowOverlayHint">只會自動顯示字幕視窗，不會自動開始翻譯或擷取音訊。</p>
         <div class="domain-field">
-          <label for="autoShowDomains" data-i18n="autoShowDomains">自動顯示網域</label>
-          <textarea id="autoShowDomains" rows="4" spellcheck="false" placeholder="youtube.com&#10;meet.google.com"></textarea>
+          <label for="autoShowDomainInput" data-i18n="autoShowDomains">自動顯示網域或網址</label>
+          <div class="domain-chip-editor">
+            <div class="domain-add-row">
+              <input id="autoShowDomainInput" type="text" spellcheck="false" autocomplete="off" data-i18n-placeholder="autoShowDomainPlaceholder" placeholder="youtube.com" />
+              <button id="addAutoShowDomain" class="primary domain-add-button" type="button" data-i18n="addAutoShowDomain">新增</button>
+            </div>
+            <input id="autoShowDomains" type="hidden" />
+            <div id="autoShowDomainChips" class="domain-chip-list" aria-live="polite"></div>
+          </div>
         </div>
-        <p class="hint" data-i18n="autoShowDomainsHint">每行一個網域，支援主網域與子網域，例如 youtube.com 會符合 www.youtube.com。</p>
+        <p class="hint" data-i18n="autoShowDomainsHint">youtube.com 會符合整個網域與子網域；完整影片網址只會符合該網址。貼上多筆可用逗號或換行分隔。</p>
       </section>
 
       <section>

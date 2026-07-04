@@ -50,21 +50,9 @@ export async function getSettings() {
   return withDetectedInitialSettings(stored[SETTINGS_KEY]);
 }
 
-export async function saveSettings(settings) {
-  const normalized = normalizeSettings(settings);
-  await chrome.storage.local.set({ [SETTINGS_KEY]: normalized });
-  return normalized;
-}
-
 export async function updateSettings(patch) {
   const current = await getSettings();
   const next = deepMerge(current, patch);
-  await chrome.storage.local.set({ [SETTINGS_KEY]: next });
-  return next;
-}
-
-export async function resetSettings() {
-  const next = withDetectedInitialSettings(null);
   await chrome.storage.local.set({ [SETTINGS_KEY]: next });
   return next;
 }

@@ -21,15 +21,40 @@
       .toLowerCase();
   }
 
-  function parseDomains(value) {
+  function normalizeUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const url = new URL(withProtocol);
+      url.hash = '';
+      if ((url.pathname && url.pathname !== '/') || url.search) {
+        return `${url.origin}${url.pathname}${url.search}`;
+      }
+      return normalizeDomain(url.hostname);
+    } catch {
+      return '';
+    }
+  }
+
+  function normalizeAutoShowRule(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^https?:\/\//i.test(raw) || /^[^/\s]+\.[^/\s]+\/.+/.test(raw)) {
+      return normalizeUrl(raw);
+    }
+    return normalizeDomain(raw);
+  }
+
+  function parseRules(value) {
     const rawItems = Array.isArray(value)
       ? value
       : String(value || '').split(/[\n,]+/);
 
     return [...new Set(rawItems
-      .map(normalizeDomain)
+      .map(normalizeAutoShowRule)
       .filter(Boolean)
-      .filter((domain) => domain !== '*' && domain !== '.'))];
+      .filter((rule) => rule !== '*' && rule !== '.'))];
   }
 
   function matchesDomain(hostname, domain) {
@@ -39,11 +64,26 @@
     return host === normalized || host.endsWith(`.${normalized}`);
   }
 
+  function currentUrlWithoutHash() {
+    try {
+      const url = new URL(location.href);
+      url.hash = '';
+      return `${url.origin}${url.pathname}${url.search}`;
+    } catch {
+      return location.href.split('#')[0];
+    }
+  }
+
+  function matchesRule(rule) {
+    if (/^https?:\/\//i.test(rule)) return currentUrlWithoutHash() === rule;
+    return matchesDomain(location.hostname, rule);
+  }
+
   function shouldAutoShow(settings) {
     if (!settings?.automation?.autoShowOverlay) return false;
-    const domains = parseDomains(settings.automation.autoShowDomains);
-    if (!domains.length) return false;
-    return domains.some((domain) => matchesDomain(location.hostname, domain));
+    const rules = parseRules(settings.automation.autoShowDomains);
+    if (!rules.length) return false;
+    return rules.some(matchesRule);
   }
 
   function showOverlayWhenReady(settings, reason, attemptsLeft = 20) {

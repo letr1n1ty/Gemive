@@ -84,11 +84,3 @@ export function formatLanguageLabel(language) {
   const primary = language.nativeName || language.englishName;
   return `${primary}｜${language.englishName}｜${language.code}`;
 }
-
-export function findLanguageByCode(code) {
-  return SUPPORTED_LANGUAGES.find((language) => language.code === code) ?? SUPPORTED_LANGUAGES.find((language) => language.code === 'zh-Hant');
-}
-
-export function getPopularLanguages() {
-  return SUPPORTED_LANGUAGES.filter((language) => language.popular);
-}

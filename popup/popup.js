@@ -1,6 +1,6 @@
-import { SUPPORTED_LANGUAGES, formatLanguageLabel } from '../core/language-registry.js';
 import { MESSAGE } from '../core/message-types.js';
 import { localizeDocument, resolveLocale, t } from '../core/i18n.js';
+import { renderLanguageSelect } from '../core/language-select.js';
 
 const els = {
   status: document.querySelector('#status'),
@@ -117,18 +117,10 @@ function applyLocale() {
 }
 
 function renderLanguages() {
-  const previous = els.targetLanguage.value || settings?.language?.targetLanguageCode;
-  const popular = SUPPORTED_LANGUAGES.filter((language) => language.popular);
-  const others = SUPPORTED_LANGUAGES.filter((language) => !language.popular);
-  els.targetLanguage.innerHTML = '';
-  const popularGroup = document.createElement('optgroup');
-  popularGroup.label = t(locale, 'popularLanguages');
-  for (const language of popular) popularGroup.appendChild(new Option(formatLanguageLabel(language), language.code));
-  const allGroup = document.createElement('optgroup');
-  allGroup.label = t(locale, 'allLanguages');
-  for (const language of others) allGroup.appendChild(new Option(formatLanguageLabel(language), language.code));
-  els.targetLanguage.append(popularGroup, allGroup);
-  if (previous) els.targetLanguage.value = previous;
+  renderLanguageSelect(els.targetLanguage, {
+    locale,
+    selectedValue: els.targetLanguage.value || settings?.language?.targetLanguageCode
+  });
 }
 
 function renderSettings(next) {
