@@ -251,6 +251,7 @@
 
   function savePosition(options = {}) {
     if (!host) return;
+    const stored = readPosition() || {};
     const rect = host.getBoundingClientRect();
     let width = rect.width;
     let height = rect.height;
@@ -259,10 +260,24 @@
       height = savedExpandedRect?.height || readPosition()?.height || DEFAULT_EXPANDED_HEIGHT;
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...stored,
       x: rect.left,
       y: rect.top,
       width: clampWidth(width),
-      height: clampHeight(height)
+      height: clampHeight(height),
+      collapsed: Boolean(stored.collapsed)
+    }));
+  }
+
+  function readStoredCollapsed() {
+    return Boolean(readPosition()?.collapsed);
+  }
+
+  function saveCollapsedState(value) {
+    const stored = readPosition() || {};
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...stored,
+      collapsed: Boolean(value)
     }));
   }
 
@@ -680,7 +695,7 @@
     };
   }
 
-  function collapseOverlay({ force = false } = {}) {
+  function collapseOverlay({ force = false, persist = true } = {}) {
     if (!host || !elements.card || !elements.launcher) return;
     if (!force && !settings.window.autoCollapse) return;
     if (!collapsed) {
@@ -704,9 +719,10 @@
     host.style.minHeight = `${LAUNCHER_SIZE}px`;
     host.style.overflow = 'visible';
     keepInsideViewport();
+    if (persist && !launcherOnlyMode) saveCollapsedState(true);
   }
 
-  function expandOverlay() {
+  function expandOverlay({ persist = true } = {}) {
     if (!host || !elements.card || !elements.launcher) return;
     launcherOnlyMode = false;
     collapsed = false;
@@ -723,6 +739,7 @@
     const size = resolveExpandedSize();
     setExpandedSize(size.width, size.height);
     keepInsideViewport();
+    if (persist) saveCollapsedState(false);
   }
 
   function maybeAutoCollapse() {
@@ -736,31 +753,36 @@
     launcherOnlyMode = true;
     host.style.display = 'block';
     moveIntoCurrentFullscreenRoot();
-    collapseOverlay({ force: true });
+    collapseOverlay({ force: true, persist: false });
     elements.launcher.title = text('startTranslation');
     elements.launcher.setAttribute('aria-label', text('startTranslation'));
   }
 
-  function showOverlay(payload = {}) {
+  function applyStoredOverlayPresentation() {
+    launcherOnlyMode = false;
+    visible = true;
+    host.style.display = 'block';
+    moveIntoCurrentFullscreenRoot();
+    collapsed = Boolean(settings.window.autoCollapse && readStoredCollapsed());
+    if (collapsed) collapseOverlay({ force: true, persist: false });
+    else expandOverlay({ persist: false });
+    keepInsideViewport();
+  }
+
+  async function showOverlay(payload = {}) {
     debug('overlay.show', { hasSettings: Boolean(payload.settings), launcherOnly: Boolean(payload.launcherOnly) });
     createHost();
     if (payload.settings) {
       settings = mergeSettings(settings, payload.settings);
       applySettings({ preserveActualSize: true });
     } else {
-      hydrateSettings();
+      await hydrateSettings();
     }
     if (payload.launcherOnly) {
       showLauncherOnly();
       return;
     }
-    launcherOnlyMode = false;
-    visible = true;
-    host.style.display = 'block';
-    moveIntoCurrentFullscreenRoot();
-    if (collapsed) collapseOverlay();
-    else expandOverlay();
-    keepInsideViewport();
+    applyStoredOverlayPresentation();
   }
 
   function closeOverlay(event) {
@@ -1079,8 +1101,9 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message?.type) {
       case MESSAGE.OVERLAY_SHOW:
-        showOverlay(message.payload || {});
-        sendResponse?.({ ok: true });
+        showOverlay(message.payload || {})
+          .then(() => sendResponse?.({ ok: true }))
+          .catch((error) => sendResponse?.({ ok: false, error: error?.message || String(error) }));
         break;
       case MESSAGE.OVERLAY_HIDE:
         hideOverlay();
